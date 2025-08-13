@@ -1,0 +1,8 @@
+### SwiftPackageManager ###
+Packages
+.build/
+xcuserdata
+DerivedData/
+*.xcodeproj
+
+.swiftpm/
