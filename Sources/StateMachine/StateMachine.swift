@@ -2,7 +2,9 @@ import ComposableArchitecture
 
 // MARK: - StateMachine
 
-public protocol StateMachine: Reducer where Action: MappableAction, Action.Input == Input, Action.IOResult == IOResult {
+public protocol StateMachine {
+    associatedtype State
+    associatedtype Action
     associatedtype Input: Sendable
     associatedtype IOEffect: Sendable
     associatedtype IOResult: Sendable
@@ -14,35 +16,32 @@ public protocol StateMachine: Reducer where Action: MappableAction, Action.Input
     func runIOEffect(_ ioEffect: IOEffect) async -> IOResult?
 }
 
-// MARK: - Default implementation & helpers
+// MARK: - Transition helpers only
 
 public extension StateMachine {
-    // Transition helpers
     static var undefined: Transition { (nil, nil) }
     static var identity: Transition { (nil, nil) }
     static func nextState(_ state: State) -> Transition { (state, nil) }
     static func run(_ effect: IOEffect) -> Transition { (nil, effect) }
     static func transition(_ state: State, effect: IOEffect) -> Transition { (state, effect) }
     static func unsafe(_ action: @escaping () -> Void) -> Transition { action(); return (nil, nil) }
+}
 
-    // Event reducer
-    static func reduce(_ state: State, _ event: StateMachineEvent<Input, IOResult>) -> Transition {
-        switch event {
-        case .input(let input):
-            return Self.reduceInput(state, input)
-        case .ioResult(let result):
-            return Self.reduceIOResult(state, result)
-        }
-    }
+// MARK: - Specialized reducer implementation for MappableAction-based Actions
 
-    // Reducer conformance
+public extension StateMachine where Self: Reducer, Action: MappableAction, Action.Input == Input, Action.IOResult == IOResult {
     public func reduce(into state: inout State, action: Action) -> Effect<Action> {
-        guard let event = Action.map(action) else { return .none }
-        let transition = Self.reduce(state, event)
+        guard let mapped = Action.map(action) else { return .none }
+        let transition: Transition
+        switch mapped {
+        case .first(let input):
+            transition = Self.reduceInput(state, input)
+        case .second(let ioResult):
+            transition = Self.reduceIOResult(state, ioResult)
+        }
         return apply(transition, to: &state)
     }
 
-    // Applies a transition to the state and returns an Effect that executes IOEffect if present
     @inlinable
     public func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
         if let next = transition.0 { state = next }

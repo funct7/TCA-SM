@@ -2,7 +2,7 @@ import ComposableArchitecture
 
 // MARK: - DebuggableStateMachine
 
-public struct DebuggableStateMachine<Base: StateMachine>: Reducer {
+public struct DebuggableStateMachine<Base: StateMachine>: Reducer where Base: Reducer, Base.Action: MappableAction, Base.Action.Input == Base.Input, Base.Action.IOResult == Base.IOResult {
     public typealias State = Base.State
     public typealias Action = Base.Action
 
@@ -21,12 +21,17 @@ public struct DebuggableStateMachine<Base: StateMachine>: Reducer {
         let before = stateDescription(state)
         #endif
 
-        // If it's not a StateMachine event, just forward to base
-        guard let event = Action.map(action) else {
+        guard let mapped = Action.map(action) else {
             return base.reduce(into: &state, action: action)
         }
 
-        let transition = Base.reduce(state, event)
+        let transition: Base.Transition
+        switch mapped {
+        case .first(let input):
+            transition = Base.reduceInput(state, input)
+        case .second(let ioResult):
+            transition = Base.reduceIOResult(state, ioResult)
+        }
 
         #if DEBUG
         let stateChange: String
@@ -36,7 +41,7 @@ public struct DebuggableStateMachine<Base: StateMachine>: Reducer {
             stateChange = "(no state change)"
         }
         let effectDesc = transition.1.map { String(describing: $0) } ?? "nil"
-        print("[\(label)] event=\(String(describing: event)) -> newState=\(stateChange) effect=\(effectDesc) from=\(before)")
+        print("[\(label)] mapped=\(String(describing: mapped)) -> newState=\(stateChange) effect=\(effectDesc) from=\(before)")
         #endif
 
         return base.apply(transition, to: &state)
