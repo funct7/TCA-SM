@@ -1,6 +1,3 @@
-# Created by https://www.toptal.com/developers/gitignore/api/swiftpackagemanager
-# Edit at https://www.toptal.com/developers/gitignore?templates=swiftpackagemanager
-
 ### SwiftPackageManager ###
 Packages
 .build/
@@ -8,5 +5,4 @@ xcuserdata
 DerivedData/
 *.xcodeproj
 
-
-# End of https://www.toptal.com/developers/gitignore/api/swiftpackagemanager
+.swiftpm/
