@@ -1,14 +1,15 @@
+import Foundation
 import ComposableArchitecture
 
 public protocol StateMachine {
     associatedtype State
     associatedtype Action
-    associatedtype Input: Sendable
-    associatedtype IOEffect: Sendable
-    associatedtype IOResult: Sendable
-
+    associatedtype Input : Sendable
+    associatedtype IOEffect : Sendable
+    associatedtype IOResult : Sendable
+    
     typealias Transition = (State?, IOEffect?)
-
+    
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
     func runIOEffect(_ ioEffect: IOEffect) async -> IOResult?
