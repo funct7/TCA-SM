@@ -19,11 +19,13 @@ where Self : Reducer,
     func reduce(into state: inout State, action: Action) -> Effect<Action> {
         guard let mapped = Action.map(action) else { return .none }
         
-        let transition = switch mapped {
-        case .first(let input): Self.reduceInput(state, input)
-        case .second(let ioResult): Self.reduceIOResult(state, ioResult)
+        let transition: Transition
+        switch mapped {
+        case .first(let input):
+            transition = Self.reduceInput(state, input)
+        case .second(let ioResult):
+            transition = Self.reduceIOResult(state, ioResult)
         }
-        
         return apply(transition, to: &state)
     }
     
