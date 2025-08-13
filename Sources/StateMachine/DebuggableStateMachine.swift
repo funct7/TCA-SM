@@ -21,9 +21,7 @@ public struct DebuggableStateMachine<Base: StateMachine>: Reducer where Base: Re
         let before = stateDescription(state)
         #endif
 
-        guard let mapped = Action.map(action) else {
-            return base.reduce(into: &state, action: action)
-        }
+        guard let mapped = Action.map(action) else { return base.reduce(into: &state, action: action) }
 
         let transition: Base.Transition
         switch mapped {
