@@ -10,33 +10,39 @@ public protocol MappableAction {
     static func map(_ action: Self) -> XOR<Input, IOResult>?
 }
 
-public extension StateMachine
-where Self : Reducer,
-      Action : MappableAction,
-      Action.Input == Input,
-      Action.IOResult == IOResult
+public extension StateMachine where
+Action : MappableAction,
+Action : Sendable,
+Action.Input == Input,
+Action.IOResult == IOResult
 {
-    func reduce(into state: inout State, action: Action) -> Effect<Action> {
-        guard let mapped = Action.map(action) else { return .none }
-        
-        let transition: Transition
-        switch mapped {
-        case .first(let input):
-            transition = Self.reduceInput(state, input)
-        case .second(let ioResult):
-            transition = Self.reduceIOResult(state, ioResult)
+    
+    static func reduce(_ state: State, _ action: Action) -> Transition {
+        return switch Action.map(action) {
+        case nil: identity
+        case .a(let input)?: reduceInput(state, input)
+        case .b(let ioResult)?: reduceIOResult(state, ioResult)
         }
-        return apply(transition, to: &state)
     }
     
-    @inlinable
-    func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
-        if let next = transition.0 { state = next }
-        guard let effect = transition.1 else { return .none }
-        
-        return .run { send in
-            guard let result = await runIOEffect(effect) else { return }
+    func applyIOEffect(_ ioEffect: IOEffect) -> Effect<Action> {
+        .run { send in
+            guard let result = await runIOEffect(ioEffect) else { return }
             await send(.ioResult(result))
         }
     }
+    
+    func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
+        let (nextState, ioEffect) = transition
+        if let nextState { state = nextState }
+        return ioEffect.map(applyIOEffect(_:)) ?? .none
+    }
+    
+    var body: some Reducer<State, Action> {
+        Reduce { state, action in
+            let transition = Self.reduce(state, action)
+            return apply(transition, to: &state)
+        }
+    }
+    
 }
