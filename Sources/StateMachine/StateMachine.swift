@@ -1,9 +1,7 @@
 import Foundation
 import ComposableArchitecture
 
-public protocol StateMachine {
-    associatedtype State
-    associatedtype Action
+public protocol StateMachine : Reducer {
     associatedtype Input : Sendable
     associatedtype IOEffect : Sendable
     associatedtype IOResult : Sendable
