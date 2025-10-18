@@ -7,7 +7,7 @@ public protocol DebuggableStateMachine : StateMachine {
 }
 
 public extension DebuggableStateMachine where
-Action : MappableAction,
+Action : StateMachineEventConvertible,
 Action : Sendable,
 Action.Input == Input,
 Action.IOResult == IOResult

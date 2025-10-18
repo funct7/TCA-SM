@@ -53,31 +53,31 @@ struct MyFeature : StateMachine {
 
 ## Action Mapping Pattern
 
-### MappableAction Protocol
+### StateMachineEventConvertible Protocol
 
 ```swift
-protocol MappableAction {
+protocol StateMachineEventConvertible {
     associatedtype Input
     associatedtype IOResult
 
     static func input(_: Input) -> Self
     static func ioResult(_: IOResult) -> Self
-    static func map(_ action: Self) -> OneOfTwo<Input, IOResult>?
+    static func map(_ action: Self) -> StateMachineEvent<Input, IOResult>?
 }
 ```
 
 Enables gradual adoption—mix StateMachine actions with standard TCA actions:
 
 ```swift
-enum Action: MappableAction {
+enum Action: StateMachineEventConvertible {
     case input(Input)
     case ioResult(IOResult)
     case childAction(ChildFeature.Action)  // Non-SM reducer
 
-    static func map(_ action: Self) -> OneOfTwo<Input, IOResult>? {
+    static func map(_ action: Self) -> StateMachineEvent<Input, IOResult>? {
         switch action {
-        case .input(let input): .left(input)
-        case .ioResult(let result): .right(result)
+        case .input(let input): .input(input)
+        case .ioResult(let result): .ioResult(result)
         case .childAction: nil  // Handled separately
         }
     }

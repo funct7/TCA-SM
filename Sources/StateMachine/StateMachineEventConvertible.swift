@@ -1,17 +1,17 @@
 import Foundation
 import ComposableArchitecture
 
-public protocol MappableAction {
+public protocol StateMachineEventConvertible {
     associatedtype Input
     associatedtype IOResult
     
     static func input(_ value: Input) -> Self
     static func ioResult(_ value: IOResult) -> Self
-    static func map(_ action: Self) -> XOR<Input, IOResult>?
+    static func map(_ action: Self) -> StateMachineEvent<Input, IOResult>?
 }
 
 public extension StateMachine where
-Action : MappableAction,
+Action : StateMachineEventConvertible,
 Action : Sendable,
 Action.Input == Input,
 Action.IOResult == IOResult
@@ -20,8 +20,8 @@ Action.IOResult == IOResult
     static func reduce(_ state: State, _ action: Action) -> Transition {
         return switch Action.map(action) {
         case nil: identity
-        case .a(let input)?: reduceInput(state, input)
-        case .b(let ioResult)?: reduceIOResult(state, ioResult)
+        case .input(let input)?: reduceInput(state, input)
+        case .ioResult(let ioResult)?: reduceIOResult(state, ioResult)
         }
     }
     
@@ -47,3 +47,5 @@ Action.IOResult == IOResult
     }
     
 }
+
+
