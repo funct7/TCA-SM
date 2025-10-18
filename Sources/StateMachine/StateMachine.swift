@@ -5,13 +5,13 @@ public protocol StateMachine : Reducer {
     associatedtype Input : Sendable
     associatedtype IOEffect : Sendable
     associatedtype IOResult : Sendable
-    associatedtype IOEffectSequence : AsyncSequence where IOEffectSequence.Element == IOResult
+    typealias IOResultStream = AsyncStream<IOResult>
     
     typealias Transition = (State?, IOEffect?)
     
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
-    func runIOEffect(_ ioEffect: IOEffect) -> IOEffectSequence
+    func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream
 }
 
 public extension StateMachine {
