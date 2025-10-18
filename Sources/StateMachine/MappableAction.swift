@@ -27,8 +27,9 @@ Action.IOResult == IOResult
     
     func applyIOEffect(_ ioEffect: IOEffect) -> Effect<Action> {
         .run { send in
-            guard let result = await runIOEffect(ioEffect) else { return }
-            await send(.ioResult(result))
+            for try await result in runIOEffect(ioEffect) {
+                await send(.ioResult(result))
+            }
         }
     }
     

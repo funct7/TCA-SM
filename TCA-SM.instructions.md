@@ -13,12 +13,13 @@ protocol StateMachine : Reducer {
     associatedtype Input : Sendable
     associatedtype IOEffect : Sendable
     associatedtype IOResult : Sendable
+    associatedtype EffectSequence : AsyncSequence where EffectSequence.Element == IOResult
 
     typealias Transition = (State?, IOEffect?)
 
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
-    func runIOEffect(_ ioEffect: IOEffect) async -> IOResult?
+    func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence
 }
 ```
 
@@ -39,8 +40,13 @@ struct MyFeature : StateMachine {
     static func reduceInput(_ state: State, _ input: Input) -> Transition { ... }
 
     // Instance = can access dependencies for side effects
-    func runIOEffect(_ ioEffect: IOEffect) async -> IOResult? {
-        await apiService.fetchData()  // ✅ Can access instance properties
+    func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence {
+        AsyncStream { continuation in
+            Task {
+                _ = await apiService.fetchData()  // ✅ Can access instance properties
+                continuation.finish()
+            }
+        }
     }
 }
 ```
@@ -95,24 +101,42 @@ extension StateMachine {
 
 ### 1. Effect Abstraction
 
-Abstract implementation details behind semantic boundaries:
+Abstract implementation details behind semantic boundaries. IO runners perform side effects and surface outcomes as `IOResult` values without making decisions:
 
 ```swift
 enum IOEffect {
     case authenticate(username: String, password: String)
-    // Not: authenticateStep1, authenticateStep2, etc.
 }
 
-func runIOEffect(_ effect: IOEffect) async -> IOResult? {
-    case .authenticate(let user, let pass):
-        // Complex orchestration hidden behind simple interface
-        guard let token = await api.login(user, pass) else {
-            return .authFailed
+enum IOResult {
+    case loginResponse(Result<Token, NetworkError>)
+    case profileResponse(Result<Profile, NetworkError>)
+}
+
+func runIOEffect(_ effect: IOEffect) -> EffectSequence {
+    switch effect {
+    case let .authenticate(username, password):
+        return AsyncStream { continuation in
+            Task {
+                // Pure IO: execute requests and surface outcomes, no branching
+                do {
+                    let token = try await api.login(username, password)
+                    continuation.yield(.loginResponse(.success(token)))
+                } catch {
+                    continuation.yield(.loginResponse(.failure(.network(error))))
+                }
+
+                do {
+                    let profile = try await api.fetchProfile()
+                    continuation.yield(.profileResponse(.success(profile)))
+                } catch {
+                    continuation.yield(.profileResponse(.failure(.network(error))))
+                }
+
+                continuation.finish()
+            }
         }
-        guard let profile = await api.fetchProfile(token) else {
-            return .authFailed
-        }
-        return .authenticated(profile)
+    }
 }
 ```
 
@@ -154,18 +178,23 @@ enum IOResult {
 }
 
 // Never:
-func runIOEffect(_ effect: IOEffect) async throws -> IOResult?  // ❌
+func runIOEffect(_ effect: IOEffect) throws -> EffectSequence  // ❌
 ```
 
 ### 5. Decision Logic in Reducers
 
 ```swift
 // Wrong: Logic in IO
-func runIOEffect(_ effect: IOEffect) async -> IOResult? {
+func runIOEffect(_ effect: IOEffect) -> EffectSequence {
+    switch effect {
     case .fetchData(let useCache):
-        if useCache && cache.hasData {  // ❌ Decision in IO
-            return .dataFetched(cache.data)
+        // if useCache && cache.hasData {  // ❌ Decision in IO
+        //     yield .dataFetched(cache.data)
+        // }
+        return AsyncStream { continuation in
+            continuation.finish()
         }
+    }
 }
 
 // Correct: Logic in reducer
@@ -269,14 +298,69 @@ static func reduceInput(_ state: State, _ input: Input) -> Transition {
         return transition(.loading, effect: .fetchData)
 }
 
-func runIOEffect(_ effect: IOEffect) async -> IOResult? {
+func runIOEffect(_ effect: IOEffect) -> EffectSequence {
+    switch effect {
     case .fetchData:
+        return AsyncStream { continuation in
+            Task {
+                do {
+                    let data = try await api.fetch()
+                    continuation.yield(.dataFetched(data))
+                } catch {
+                    continuation.yield(.fetchFailed(error))
+                }
+                continuation.finish()
+            }
+        }
+    }
+}
+
+// Migrating from single-result to stream:
+// Old: async -> IOResult?
+// New: return AsyncStream<IOResult> { continuation in
+//   if let result = oldReturnValue { continuation.yield(result) }
+//   continuation.finish()
+// }
+```
+
+## Migration Patterns
+
+### From TCA to TCA-SM
+
+```swift
+// TCA Style
+case .buttonTapped:
+    state.isLoading = true
+    return .run { send in
         do {
             let data = try await api.fetch()
-            return .dataFetched(data)
+            await send(.dataLoaded(data))
         } catch {
-            return .fetchFailed(error)
+            await send(.loadFailed(error))
         }
+    }
+
+// TCA-SM Style
+static func reduceInput(_ state: State, _ input: Input) -> Transition {
+    case .buttonTapped:
+        return transition(.loading, effect: .fetchData)
+}
+
+func runIOEffect(_ effect: IOEffect) -> EffectSequence {
+    switch effect {
+    case .fetchData:
+        return AsyncStream { continuation in
+            Task {
+                do {
+                    let data = try await api.fetch()
+                    continuation.yield(.dataFetched(data))
+                } catch {
+                    continuation.yield(.fetchFailed(error))
+                }
+                continuation.finish()
+            }
+        }
+    }
 }
 ```
 
