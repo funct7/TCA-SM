@@ -36,7 +36,7 @@ Action.IOResult == IOResult
     func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
         let (nextState, ioEffect) = transition
         if let nextState { state = nextState }
-        return ioEffect.map(applyIOEffect(_:)) ?? .none
+        return ioEffect.extract(applyIOEffect(_:))
     }
     
     var body: some Reducer<State, Action> {
@@ -48,4 +48,22 @@ Action.IOResult == IOResult
     
 }
 
-
+public extension ComposableEffect {
+    
+    typealias TCAEffect = ComposableArchitecture.Effect
+    
+    func extract<Action, Input, IOResult>(_ operation: @escaping (Effect) -> TCAEffect<Action>) -> TCAEffect<Action>
+    where
+    Action : StateMachineEventConvertible,
+    Action : Sendable,
+    Action.Input == Input,
+    Action.IOResult == IOResult
+    {
+        switch self {
+        case .just(let effect): operation(effect)
+        case .merge(let effects): .merge(effects.map { $0.extract(operation) })
+        case .concat(let effects): .concatenate(effects.map { $0.extract(operation) })
+        }
+    }
+    
+}
