@@ -51,10 +51,6 @@ public extension Runtimes {
         @ReducerBuilder<SM.State, SM.Action> stateMachine: () -> SM,
         withDependencies prepareDependencies: ((inout DependencyValues) -> Void)? = nil
     ) -> Runtime<SM>
-    where SM : StateMachine,
-          SM.Action : StateMachineEventConvertible,
-          SM.Action.Input == SM.Input,
-          SM.Action.IOResult == SM.IOResult
     {
         Store<SM.State, SM.Action>(
             initialState: initialState(),
