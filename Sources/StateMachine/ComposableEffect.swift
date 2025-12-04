@@ -1,3 +1,5 @@
+import Foundation
+
 indirect public enum ComposableEffect<Effect> {
     case just(Effect)
     case merge([Self])
