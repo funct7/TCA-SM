@@ -10,7 +10,7 @@ SM : StateMachine,
 SM.Action : StateMachineEventConvertible
 
 @available(iOS 16, *)
-public extension Runtime {
+public extension Store {
     
     static func make<SM>(
         initialState: @autoclosure () -> SM.State,
@@ -56,12 +56,11 @@ public extension Runtimes {
           SM.Action.Input == SM.Input,
           SM.Action.IOResult == SM.IOResult
     {
-        Store<SM.State, SM.Action>(
+        Store.make(
             initialState: initialState(),
-            reducer: stateMachine,
+            stateMachine: stateMachine,
             withDependencies: prepareDependencies
         )
-        .scope(state: \.self, action: SM.Action.input(_:))
     }
     
 }
