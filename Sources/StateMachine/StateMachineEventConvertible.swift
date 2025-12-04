@@ -1,7 +1,7 @@
 import Foundation
 import ComposableArchitecture
 
-public protocol StateMachineEventConvertible {
+public protocol StateMachineEventConvertible<Input, IOResult> {
     associatedtype Input
     associatedtype IOResult
     
