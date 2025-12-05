@@ -13,21 +13,21 @@ protocol StateMachine : Reducer {
     associatedtype Input : Sendable
     associatedtype IOEffect : Sendable
     associatedtype IOResult : Sendable
-    associatedtype EffectSequence : AsyncSequence where EffectSequence.Element == IOResult
 
-    typealias Transition = (State?, IOEffect?)
+    typealias Transition = (State?, ComposableEffect<IOEffect>)
 
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
-    func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence
+    func runIOEffect(_ ioEffect: IOEffect) async -> IOResult?
+    func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream
 }
 ```
 
 **Architectural Constraints**:
 
 - **Static reduce methods**: Enforce purity—no access to dependencies or instance state
-- **Instance runIOEffect**: Enables dependency injection for side effects
-- **Transition tuple**: Prevents coupling state calculation with effect execution
+- **Dual runIOEffect overloads**: Single-result helper keeps basic IO ergonomic; stream overload powers long-lived effects without exposing continuations. Internally we merge both sources via `AsyncAlgorithms.merge`, so implement whichever fits the effect and they automatically co-exist.
+- **Composable Transition tuple**: Prevents coupling state calculation with effect execution while supporting concat/merge composition
 
 ### Why Static vs Instance Methods
 
@@ -40,15 +40,34 @@ struct MyFeature : StateMachine {
     static func reduceInput(_ state: State, _ input: Input) -> Transition { ... }
 
     // Instance = can access dependencies for side effects
-    func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence {
-        AsyncStream { continuation in
-            Task {
-                _ = await apiService.fetchData()  // ✅ Can access instance properties
-                continuation.finish()
-            }
-        }
+    func runIOEffect(_ ioEffect: IOEffect) async -> IOResult? {
+        await apiService.fetchData()  // ✅ Can access instance properties
     }
 }
+
+### Streaming IOEffects
+
+Use the stream overload when an effect needs to emit more than one `IOResult` over time. The framework merges that stream with the synthesized single-result stream, so `.fetch` can remain a one-off effect while `.print` (or similar) can emit multiple values without boilerplate.
+
+```swift
+func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream {
+    guard case .locationUpdates = ioEffect else {
+        return IOResultStream { $0.finish() }
+    }
+
+    return IOResultStream { continuation in
+        let task = Task {
+            for await reading in locationManager.updates() {
+                guard !Task.isCancelled else { break }
+                continuation.yield(.location(.success(reading)))
+            }
+            continuation.finish()
+        }
+        continuation.onTermination = { _ in task.cancel() }
+    }
+}
+
+```
 ```
 
 ## Action Mapping Pattern
@@ -88,12 +107,14 @@ enum Action: StateMachineEventConvertible {
 
 ```swift
 extension StateMachine {
-    static var undefined: Transition { (nil, nil) }
-    static var identity: Transition { (nil, nil) }
-    static func nextState(_ state: State) -> Transition { (state, nil) }
-    static func run(_ effect: IOEffect) -> Transition { (nil, effect) }
-    static func transition(_ state: State, effect: IOEffect) -> Transition { (state, effect) }
-    static func unsafe(_ action: @escaping () -> Void) -> Transition { action(); return (nil, nil) }
+    static var undefined: Transition { (nil, .none) }
+    static var identity: Transition { (nil, .none) }
+    static func nextState(_ state: State) -> Transition { (state, .none) }
+    static func run(_ effect: IOEffect) -> Transition { (nil, .just(effect)) }
+    static func run(_ effect: ComposableEffect<IOEffect>) -> Transition { (nil, effect) }
+    static func transition(_ state: State, effect: IOEffect) -> Transition { (state, .just(effect)) }
+    static func transition(_ state: State, effect: ComposableEffect<IOEffect>) -> Transition { (state, effect) }
+    static func unsafe(_ action: @escaping () -> Void) -> Transition { action(); return (nil, .none) }
 }
 ```
 
@@ -140,29 +161,32 @@ enum IOResult {
     case profileResponse(Result<Profile, NetworkError>)
 }
 
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
-    switch effect {
-    case let .authenticate(username, password):
-        return AsyncStream { continuation in
-            Task {
-                // Pure IO: execute requests and surface outcomes, no branching
-                do {
-                    let token = try await api.login(username, password)
-                    continuation.yield(.loginResponse(.success(token)))
-                } catch {
-                    continuation.yield(.loginResponse(.failure(.network(error))))
-                }
+func runIOEffect(_ effect: IOEffect) -> IOResultStream {
+    guard case let .authenticate(username, password) = effect else {
+        return IOResultStream { $0.finish() }
+    }
 
-                do {
-                    let profile = try await api.fetchProfile()
-                    continuation.yield(.profileResponse(.success(profile)))
-                } catch {
-                    continuation.yield(.profileResponse(.failure(.network(error))))
-                }
-
+    return IOResultStream { continuation in
+        let task = Task {
+            do {
+                let token = try await api.login(username, password)
+                continuation.yield(.loginResponse(.success(token)))
+            } catch {
+                continuation.yield(.loginResponse(.failure(.network(error))))
                 continuation.finish()
+                return
             }
+
+            do {
+                let profile = try await api.fetchProfile()
+                continuation.yield(.profileResponse(.success(profile)))
+            } catch {
+                continuation.yield(.profileResponse(.failure(.network(error))))
+            }
+
+            continuation.finish()
         }
+        continuation.onTermination = { _ in task.cancel() }
     }
 }
 ```
@@ -205,22 +229,20 @@ enum IOResult {
 }
 
 // Never:
-func runIOEffect(_ effect: IOEffect) throws -> EffectSequence  // ❌
+func runIOEffect(_ effect: IOEffect) throws -> IOResult?  // ❌ keep IO errors inside IOResult
 ```
 
 ### 5. Decision Logic in Reducers
 
 ```swift
 // Wrong: Logic in IO
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
+func runIOEffect(_ effect: IOEffect) async -> IOResult? {
     switch effect {
     case .fetchData(let useCache):
-        // if useCache && cache.hasData {  // ❌ Decision in IO
-        //     yield .dataFetched(cache.data)
-        // }
-        return AsyncStream { continuation in
-            continuation.finish()
+        if useCache && cache.hasData {  // ❌ Decision in IO
+            return .dataFetched(cache.data)
         }
+        return nil
     }
 }
 
@@ -325,29 +347,20 @@ static func reduceInput(_ state: State, _ input: Input) -> Transition {
         return transition(.loading, effect: .fetchData)
 }
 
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
+func runIOEffect(_ effect: IOEffect) async -> IOResult? {
     switch effect {
     case .fetchData:
-        return AsyncStream { continuation in
-            Task {
-                do {
-                    let data = try await api.fetch()
-                    continuation.yield(.dataFetched(data))
-                } catch {
-                    continuation.yield(.fetchFailed(error))
-                }
-                continuation.finish()
-            }
+        do {
+            let data = try await api.fetch()
+            return .dataFetched(data)
+        } catch {
+            return .fetchFailed(error)
         }
     }
 }
 
-// Migrating from single-result to stream:
-// Old: async -> IOResult?
-// New: return AsyncStream<IOResult> { continuation in
-//   if let result = oldReturnValue { continuation.yield(result) }
-//   continuation.finish()
-// }
+// When an effect truly emits multiple values, override
+// override runIOEffect(_: ) -> IOResultStream instead of wrapping the single result.
 ```
 
 ## Migration Patterns
@@ -373,19 +386,14 @@ static func reduceInput(_ state: State, _ input: Input) -> Transition {
         return transition(.loading, effect: .fetchData)
 }
 
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
+func runIOEffect(_ effect: IOEffect) async -> IOResult? {
     switch effect {
     case .fetchData:
-        return AsyncStream { continuation in
-            Task {
-                do {
-                    let data = try await api.fetch()
-                    continuation.yield(.dataFetched(data))
-                } catch {
-                    continuation.yield(.fetchFailed(error))
-                }
-                continuation.finish()
-            }
+        do {
+            let data = try await api.fetch()
+            return .dataFetched(data)
+        } catch {
+            return .fetchFailed(error)
         }
     }
 }

@@ -27,7 +27,7 @@ Action.IOResult == IOResult
     
     func applyIOEffect(_ ioEffect: IOEffect) -> Effect<Action> {
         .run { send in
-            for try await result in runIOEffect(ioEffect) {
+            for await result in mergeIOResults(of: ioEffect) {
                 await send(.ioResult(result))
             }
         }

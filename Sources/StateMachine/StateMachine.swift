@@ -1,5 +1,6 @@
 import Foundation
 import ComposableArchitecture
+import AsyncAlgorithms
 
 public protocol StateMachine : Reducer {
     associatedtype Input : Sendable
@@ -11,6 +12,7 @@ public protocol StateMachine : Reducer {
     
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
+    func runIOEffect(_ ioEffect: IOEffect) async -> IOResult?
     func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream
 }
 
@@ -23,4 +25,34 @@ public extension StateMachine {
     static func transition(_ state: State, _ effect: IOEffect) -> Transition { (state, .just(effect)) }
     static func transition(_ state: State, _ effect: ComposableEffect<IOEffect>) -> Transition { (state, effect) }
     static func unsafe(_ action: @escaping () -> Void) -> Transition { action(); return (nil, .none) }
+}
+
+public extension StateMachine {
+    
+    func runIOEffect(_ ioEffect: IOEffect) async -> IOResult? { nil }
+    
+    func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream { IOResultStream.finished }
+    
+    func mergeIOResults(of ioEffect: IOEffect) -> IOResultStream {
+        IOResultStream { continuation in
+            let task = Task {
+                let singleResultStream = IOResultStream { continuation in
+                    let task = Task {
+                        if let single = await runIOEffect(ioEffect) {
+                            continuation.yield(single)
+                        }
+                        continuation.finish()
+                    }
+                    continuation.onTermination = { _ in task.cancel() }
+                }
+                
+                for await value in merge(singleResultStream, runIOEffect(ioEffect)) {
+                    continuation.yield(value)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+    
 }
