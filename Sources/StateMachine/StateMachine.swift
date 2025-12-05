@@ -12,7 +12,13 @@ public protocol StateMachine : Reducer {
     
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
+    /**
+     - Warning: Do NOT handle the same ``IOEffect`` in both versions of ``StateMachine.runIOEffect(_:)`` since it will result in an undefined behavior.
+     */
     func runIOEffect(_ ioEffect: IOEffect) async -> IOResult?
+    /**
+     - Warning: Do NOT handle the same ``IOEffect`` in both versions of ``StateMachine.runIOEffect(_:)`` since it will result in an undefined behavior.
+     */
     func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream
 }
 
