@@ -1,6 +1,7 @@
 import Foundation
 import ComposableArchitecture
 import AsyncAlgorithms
+import ConcurrencyExtras
 
 public protocol StateMachine : Reducer {
     associatedtype Input : Sendable
