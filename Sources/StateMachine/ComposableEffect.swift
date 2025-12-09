@@ -1,11 +1,6 @@
 import Foundation
 import ComposableArchitecture
 
-public protocol ComposableEffectConvertible {
-    /// Lift the current effect into a composable representation.
-    func asComposableEffect() -> ComposableEffect<Self>
-}
-
 indirect public enum ComposableEffect<Effect> {
     case just(Effect)
     case merge([Self])
@@ -59,7 +54,6 @@ IOEffect : ComposableEffectConvertible
         }
     }
     
-
 }
 
 public extension ComposableEffect {

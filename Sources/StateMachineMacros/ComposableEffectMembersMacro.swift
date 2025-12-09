@@ -6,7 +6,8 @@ import SwiftSyntaxMacros
 @main
 struct StateMachinePlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
-        ComposableEffectMembersMacro.self
+        ComposableEffectMembersMacro.self,
+        EffectRunnerMacro.self
     ]
 }
 
@@ -32,18 +33,18 @@ public struct ComposableEffectMembersMacro: MemberMacro, ExtensionMacro {
         let accessModifier = enumDecl.effectiveAccessModifier
         let accessPrefix = accessModifier.map { "\($0) " } ?? ""
         let composableCases: [DeclSyntax] = [
-            "\(raw: accessPrefix)indirect case merge([Self])",
-            "\(raw: accessPrefix)indirect case concat([Self])"
+            "indirect case merge([Self])",
+            "indirect case concat([Self])"
         ]
         
         let factories: [DeclSyntax] = [
             """
-            \(raw: accessPrefix)static func merge(_ effects: Self...) -> Self {
+            static func merge(_ effects: Self...) -> Self {
                 .merge(effects)
             }
             """,
             """
-            \(raw: accessPrefix)static func concat(_ effects: Self...) -> Self {
+            static func concat(_ effects: Self...) -> Self {
                 .concat(effects)
             }
             """
