@@ -19,6 +19,6 @@ public extension StateMachine {
     static var identity: Transition { (nil, nil) }
     static func nextState(_ state: State) -> Transition { (state, nil) }
     static func run(_ effect: IOEffect) -> Transition { (nil, effect) }
-    static func transition(_ state: State, effect: IOEffect) -> Transition { (state, effect) }
+    static func transition(_ state: State, _ effect: IOEffect) -> Transition { (state, effect) }
     static func unsafe(_ action: @escaping () -> Void) -> Transition { action(); return (nil, nil) }
 }

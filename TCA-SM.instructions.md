@@ -97,6 +97,33 @@ extension StateMachine {
 }
 ```
 
+### ComposableEffect Macro
+
+Add the `@ComposableEffect` attribute to any effect enum to synthesize scoped helpers that lift enum cases into `ComposableEffect` values. This keeps reducer code terse even when mixing nested combinators:
+
+```swift
+@ComposableEffect
+enum IOEffect {
+    case fetch(Int)
+    case print(Int)
+}
+
+static func reduceInput(_ state: State, _ input: Input) -> Transition {
+    switch input {
+    case .numberFactButtonTapped:
+        run(.concat(
+            .fetch(state.count),
+            .merge(
+                .print(state.count),
+                .print(state.count * 2)
+            )
+        ))
+    }
+}
+```
+
+The macro-generated functions honor the enum's access control, so `public enum` cases yield `public static func fetch(...) -> ComposableEffect` helpers that downstream modules can call without wrapping cases in `.just` manually.
+
 ## Key Design Principles
 
 ### 1. Effect Abstraction
