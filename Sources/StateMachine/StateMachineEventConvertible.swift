@@ -12,7 +12,6 @@ public protocol StateMachineEventConvertible<Input, IOResult> {
 
 public extension StateMachine where
 Action : StateMachineEventConvertible,
-Action : Sendable,
 Action.Input == Input,
 Action.IOResult == IOResult
 {

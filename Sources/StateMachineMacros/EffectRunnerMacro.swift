@@ -9,7 +9,7 @@ public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         let info = try EffectRunnerAnalyzer.analyze(declaration: declaration)
-        return [info.makeEffectHandlerProtocol(), info.makeRunIOEffect()]
+        return [info.makeEffectHandlerProtocol()] + info.makeComposableHelpers() + [info.makeRunIOEffect()]
     }
     
     public static func expansion(
@@ -21,10 +21,10 @@ public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
         guard let enumDecl = member.as(EnumDeclSyntax.self), enumDecl.name.text == "IOEffect" else {
             return []
         }
-        if enumDecl.hasAttribute(named: "ComposableEffectMembers") {
+        if enumDecl.hasAttribute(named: "ComposableEffect") {
             return []
         }
-        return ["@ComposableEffectMembers"]
+        return ["@ComposableEffect"]
     }
 }
 
@@ -85,6 +85,44 @@ private struct EffectRunnerAnalyzer {
             \(raw: requirementList)
         }
         """
+    }
+
+    func makeComposableHelpers() -> [DeclSyntax] {
+        let access = accessPrefix
+        let reduce: DeclSyntax = """
+        \(raw: access)static func reduce(_ state: State, _ action: Action) -> Transition {
+            return switch Action.map(action) {
+            case nil: identity
+            case .input(let input)?: reduceInput(state, input)
+            case .ioResult(let ioResult)?: reduceIOResult(state, ioResult)
+            }
+        }
+        """
+        let applyIO: DeclSyntax = """
+        \(raw: access)func applyIOEffect(_ ioEffect: IOEffect) -> Effect<Action> {
+            .run { send in
+                for try await result in runIOEffect(ioEffect) {
+                    await send(.ioResult(result))
+                }
+            }
+        }
+        """
+        let apply: DeclSyntax = """
+        \(raw: access)func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
+            let (nextState, ioEffect) = transition
+            if let nextState { state = nextState }
+            return ioEffect.map { $0.asComposableEffect().extract(applyIOEffect(_:)) } ?? .none
+        }
+        """
+        let body: DeclSyntax = """
+        \(raw: access)var body: some Reducer<State, Action> {
+            Reduce { state, action in
+                let transition = Self.reduce(state, action)
+                return apply(transition, to: &state)
+            }
+        }
+        """
+        return [reduce, applyIO, apply, body]
     }
 }
 
