@@ -99,10 +99,10 @@ extension StateMachine {
 
 ### ComposableEffect Macro
 
-Add the `@ComposableEffectMembers` attribute to any effect enum to synthesize scoped helpers that lift enum cases into `ComposableEffect` values. This keeps reducer code terse even when mixing nested combinators:
+Add the `@ComposableEffect` attribute to any effect enum to synthesize scoped helpers that lift enum cases into `ComposableEffect` values. This keeps reducer code terse even when mixing nested combinators:
 
 ```swift
-@ComposableEffectMembers
+@ComposableEffect
 enum IOEffect {
     case fetch(Int)
     case print(Int)

@@ -18,16 +18,16 @@ public struct ComposableEffectMembersMacro: MemberMacro, ExtensionMacro {
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         guard let enumDecl = declaration.as(EnumDeclSyntax.self) else {
-            throw MacroError.message("@ComposableEffectMembers can only be attached to enums")
+            throw MacroError.message("@ComposableEffect can only be attached to enums")
         }
         let caseDecls = enumDecl.memberBlock.members.compactMap { $0.decl.as(EnumCaseDeclSyntax.self) }
         guard caseDecls.isNotEmpty else {
-            throw MacroError.message("@ComposableEffectMembers requires at least one case")
+            throw MacroError.message("@ComposableEffect requires at least one case")
         }
         
         let existingCaseNames = caseDecls.flatMap { $0.elements.map(\.name.text) }
         if existingCaseNames.contains("merge") || existingCaseNames.contains("concat") {
-            throw MacroError.message("@ComposableEffectMembers cannot be applied to enums that already declare merge/concat cases")
+            throw MacroError.message("@ComposableEffect cannot be applied to enums that already declare merge/concat cases")
         }
         
         let accessModifier = enumDecl.effectiveAccessModifier
@@ -78,7 +78,7 @@ public struct ComposableEffectMembersMacro: MemberMacro, ExtensionMacro {
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
         guard declaration.is(EnumDeclSyntax.self) else {
-            throw MacroError.message("@ComposableEffectMembers can only be attached to enums")
+            throw MacroError.message("@ComposableEffect can only be attached to enums")
         }
         
         let typeDescription = type.trimmedDescription

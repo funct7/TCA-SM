@@ -43,15 +43,15 @@ private struct EffectRunnerAnalyzer {
             parentName = actorDecl.name.text
             parentDecl = actorDecl
         } else {
-            throw MacroError.message("@EffectRunner can only be attached to a struct or actor")
+            throw MacroError.message("@ComposableEffectRunner can only be attached to a struct or actor")
         }
         guard let ioEffectEnum = declaration.memberBlock.members
             .compactMap({ $0.decl.as(EnumDeclSyntax.self) })
             .first(where: { $0.name.text == "IOEffect" }) else {
-            throw MacroError.message("@EffectRunner requires a nested enum named IOEffect")
+            throw MacroError.message("@ComposableEffectRunner requires a nested enum named IOEffect")
         }
         if ioEffectEnum.containsCase(named: "merge") || ioEffectEnum.containsCase(named: "concat") {
-            throw MacroError.message("@EffectRunner should not be used when IOEffect already declares merge/concat")
+            throw MacroError.message("@ComposableEffectRunner should not be used when IOEffect already declares merge/concat")
         }
         let cases = try ioEffectEnum.collectLeafCases()
         return .init(parentName: parentName, ioEffectCases: cases, parentDecl: parentDecl)
@@ -66,9 +66,15 @@ private struct EffectRunnerAnalyzer {
         \(raw: access)func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream {
             switch ioEffect {
             case .merge:
-                return .init { $0.finish() }
+                return .init { continuation in
+                    assertionFailure("IOEffect.merge is synthesized for composition and should not reach runIOEffect")
+                    continuation.finish()
+                }
             case .concat:
-                return .init { $0.finish() }
+                return .init { continuation in
+                    assertionFailure("IOEffect.concat is synthesized for composition and should not reach runIOEffect")
+                    continuation.finish()
+                }
             \(raw: leafSwitchCases)
             }
         }
