@@ -1,5 +1,6 @@
 @attached(member, names: arbitrary)
-public macro ComposableEffectMembers() = #externalMacro(
+@attached(extension, conformances: ComposableEffectConvertible)
+public macro ComposableEffect() = #externalMacro(
     module: "StateMachineMacros",
     type: "ComposableEffectMembersMacro"
 )

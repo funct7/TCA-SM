@@ -6,55 +6,88 @@ import SwiftSyntaxMacros
 @main
 struct StateMachinePlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
-        ComposableEffectMembersMacro.self
+        ComposableEffectMembersMacro.self,
+        EffectRunnerMacro.self
     ]
 }
 
-public struct ComposableEffectMembersMacro: MemberMacro {
+public struct ComposableEffectMembersMacro: MemberMacro, ExtensionMacro {
     public static func expansion(
         of attribute: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         guard let enumDecl = declaration.as(EnumDeclSyntax.self) else {
-            throw MacroError.message("@ComposableEffectMembers can only be attached to enums")
+            throw MacroError.message("@ComposableEffect can only be attached to enums")
         }
         let caseDecls = enumDecl.memberBlock.members.compactMap { $0.decl.as(EnumCaseDeclSyntax.self) }
         guard caseDecls.isNotEmpty else {
-            throw MacroError.message("@ComposableEffectMembers requires at least one case")
+            throw MacroError.message("@ComposableEffect requires at least one case")
         }
+        
+        let existingCaseNames = caseDecls.flatMap { $0.elements.map(\.name.text) }
+        if existingCaseNames.contains("merge") || existingCaseNames.contains("concat") {
+            throw MacroError.message("@ComposableEffect cannot be applied to enums that already declare merge/concat cases")
+        }
+        
         let accessModifier = enumDecl.effectiveAccessModifier
-        return caseDecls.flatMap { decl in
-            decl.elements.map { element in
-                buildFunctionDecl(for: element, accessModifier: accessModifier)
-            }
-        }
-    }
-    
-    private static func buildFunctionDecl(
-        for element: EnumCaseElementSyntax,
-        accessModifier: String?
-    ) -> DeclSyntax {
-        let name = element.name.text
-        let parameterStrings: [(declaration: String, argument: String)]
-        if let parameters = element.parameterClause?.parameters {
-            parameterStrings = parameters.enumerated().map { index, parameter in
-                parameter.render(index: index)
-            }
-        } else {
-            parameterStrings = []
-        }
-        let parameterList = parameterStrings.map { $0.declaration }.joined(separator: ", ")
-        let argumentList = parameterStrings.map { $0.argument }.joined(separator: ", ")
-        let parametersClause = "(\(parameterList))"
-        let argumentClause = argumentList.isEmpty ? "" : "(\(argumentList))"
         let accessPrefix = accessModifier.map { "\($0) " } ?? ""
-        let functionDecl: DeclSyntax = """
-        \(raw: accessPrefix)static func \(raw: name)\(raw: parametersClause) -> ComposableEffect<Self> {
-            .just(.\(raw: name)\(raw: argumentClause))
+        let composableCases: [DeclSyntax] = [
+            "indirect case merge([Self])",
+            "indirect case concat([Self])"
+        ]
+        
+        let factories: [DeclSyntax] = [
+            """
+            static func merge(_ effects: Self...) -> Self {
+                .merge(effects)
+            }
+            """,
+            """
+            static func concat(_ effects: Self...) -> Self {
+                .concat(effects)
+            }
+            """
+        ]
+        
+        let leafCaseNames = existingCaseNames.filter { $0 != "merge" && $0 != "concat" }
+        let leafSwitchCases = leafCaseNames
+            .map { "case .\($0): return .just(self)" }
+            .joined(separator: "\n            ")
+        
+        let asComposableEffectDecl: DeclSyntax = """
+        \(raw: accessPrefix)func asComposableEffect() -> ComposableEffect<Self> {
+            switch self {
+            case .merge(let effects):
+                return .merge(effects.map { $0.asComposableEffect() })
+            case .concat(let effects):
+                return .concat(effects.map { $0.asComposableEffect() })
+            \(raw: leafSwitchCases.isEmpty ? "" : leafSwitchCases)
+            }
         }
         """
-        return functionDecl
+        
+        return composableCases + factories + [asComposableEffectDecl]
+    }
+    
+    public static func expansion(
+        of attribute: AttributeSyntax,
+        attachedTo declaration: some DeclGroupSyntax,
+        providingExtensionsOf type: some TypeSyntaxProtocol,
+        conformingTo protocols: [TypeSyntax],
+        in context: some MacroExpansionContext
+    ) throws -> [ExtensionDeclSyntax] {
+        guard declaration.is(EnumDeclSyntax.self) else {
+            throw MacroError.message("@ComposableEffect can only be attached to enums")
+        }
+        
+        let typeDescription = type.trimmedDescription
+        let protocolList = protocols.map { $0.trimmedDescription }.joined(separator: ", ")
+        guard !protocolList.isEmpty else { return [] }
+        
+        let decl: DeclSyntax = "extension \(raw: typeDescription): \(raw: protocolList) { }"
+        guard let ext = decl.as(ExtensionDeclSyntax.self) else { return [] }
+        return [ext]
     }
 }
 
@@ -71,33 +104,6 @@ private extension EnumDeclSyntax {
     }
 }
 
-private extension EnumCaseParameterSyntax {
-    func render(index: Int) -> (declaration: String, argument: String) {
-        let internalName = (secondName ?? firstName)?.text ?? "value\(index)"
-        let typeDescription = type.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let externalName = firstName?.text
-        let declaration: String
-        if let externalName {
-            if externalName == "_" {
-                declaration = "_ \(internalName): \(typeDescription)"
-            } else if secondName == nil {
-                declaration = "\(externalName): \(typeDescription)"
-            } else {
-                declaration = "\(externalName) \(internalName): \(typeDescription)"
-            }
-        } else {
-            declaration = "_ \(internalName): \(typeDescription)"
-        }
-        let argument: String
-        if let externalName, externalName != "_" {
-            argument = "\(externalName): \(internalName)"
-        } else {
-            argument = internalName
-        }
-        return (declaration, argument)
-    }
-}
-
 extension Collection {
     var isNotEmpty: Bool { !isEmpty }
 }
@@ -109,6 +115,12 @@ public enum MacroError: Error, CustomStringConvertible {
         switch self {
         case .message(let message): return message
         }
+    }
+}
+
+private extension SyntaxProtocol {
+    var trimmedDescription: String {
+        description.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
