@@ -60,18 +60,18 @@ private struct EffectRunnerAnalyzer {
     func makeRunIOEffect() -> DeclSyntax {
         let leafSwitchCases = ioEffectCases
             .map { $0.makeSwitchCase() }
-            .joined(separator: "\n        ")
+            .joined(separator: "\n    ")
         let access = accessPrefix
         return """
         \(raw: access)func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream {
             switch ioEffect {
             case .merge:
-                return .init { continuation in
+                IOResultStream { continuation in
                     assertionFailure("IOEffect.merge is synthesized for composition and should not reach runIOEffect")
                     continuation.finish()
                 }
             case .concat:
-                return .init { continuation in
+                IOResultStream { continuation in
                     assertionFailure("IOEffect.concat is synthesized for composition and should not reach runIOEffect")
                     continuation.finish()
                 }
@@ -180,7 +180,7 @@ private struct IOEffectCase {
         let patternSuffix = bindings.isEmpty ? "" : "(\(bindings))"
         let arguments = parameters.map { $0.callArgument }.joined(separator: ", ")
         let callSuffix = arguments.isEmpty ? "" : "(\(arguments))"
-        return "case .\(name)\(patternSuffix): return self.\(handlerName)\(callSuffix)"
+        return "case .\(name)\(patternSuffix): \(handlerName)\(callSuffix)"
     }
 }
 
