@@ -124,6 +124,132 @@ static func reduceInput(_ state: State, _ input: Input) -> Transition {
 
 The macro-generated functions honor the enum's access control, so `public enum` cases yield `public static func fetch(...) -> ComposableEffect` helpers that downstream modules can call without wrapping cases in `.just` manually.
 
+### ComposableEffectRunner Macro
+
+`@ComposableEffectRunner` belongs on the feature type (struct/actor) and does more than `@ComposableEffect` alone:
+
+- It auto-applies `@ComposableEffect` to the nested `IOEffect` enum if you didn't add it yourself.
+- It synthesizes composition-aware reducer plumbing (`reduce`, `applyIOEffect`, `apply`, `body`) so your `Transition` can keep using plain `IOEffect?` while still emitting composed effects like `.merge`/`.concat` in reducer code.
+- It generates a `runIOEffect(_:) -> IOResultStream` dispatcher plus a private `EffectRunner` protocol with per-case methods.
+
+If you only use `@ComposableEffect` on `IOEffect`, you will still have to hand-roll composition extraction and reducer wiring. To get the composable reducer behavior, apply `@ComposableEffectRunner` to your feature and conform to the synthesized `{Feature}.EffectRunner` by implementing one method per `IOEffect` case. Move the logic you previously wrote in `runIOEffect` into those per-case methods; the macro-routed `runIOEffect(_:)` will call them for you.
+
+**Minimal example**
+
+```swift
+@ComposableEffectRunner
+struct Feature: StateMachine {
+    struct State: Equatable { var count = 0 }
+    enum Input { case tap }
+
+    // You may omit this annotation; the runner macro will add it if missing.
+    @ComposableEffect
+    enum IOEffect {
+        case fetch(Int)
+        case log(Int)
+    }
+
+    typealias IOResult = TaskResult<String>
+    typealias Action = StateMachineEvent<Input, IOResult>
+
+    static func reduceInput(_ state: State, _ input: Input) -> Transition {
+        // Composition stays ergonomic in reducers.
+        run(.concat(
+            .merge(.log(state.count), .log(state.count * 2)),
+            .fetch(state.count)
+        ))
+    }
+
+    static func reduceIOResult(_ state: State, _ result: IOResult) -> Transition {
+        nextState(state) // handle result normally
+    }
+}
+
+// The macro synthesizes Feature.EffectRunner; implement one method per IOEffect case.
+extension Feature: Feature.EffectRunner {
+    func runFetch(_ value: Int) -> IOResultStream {
+        IOResultStream { continuation in
+            let task = Task {
+                do {
+                    let (data, _) = try await URLSession.shared
+                        .data(from: URL(string: "https://numbersapi.com/\(value)/trivia")!)
+                    continuation.yield(.success(String(decoding: data, as: UTF8.self)))
+                } catch {
+                    continuation.yield(.failure(error))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func runLog(_ value: Int) -> IOResultStream {
+        IOResultStream { continuation in
+            continuation.yield(.success("log: \(value)"))
+            continuation.finish()
+        }
+    }
+}
+```
+
+**Before vs After (manual vs composable)**
+
+```swift
+// BEFORE: manual plumbing, no composition helpers
+@ComposableEffect
+enum IOEffect { case fetch(Int), log(Int) }
+
+struct Feature: StateMachine {
+    // ... State, Input, IOResult, Action
+
+    static func reduceInput(_ state: State, _ input: Input) -> Transition {
+        // Must return plain IOEffect (no merge/concat helpers)
+        run(.fetch(state.count))
+    }
+
+    func runIOEffect(_ effect: IOEffect) async -> IOResult? {
+        switch effect {
+        case .fetch(let value): /* fetch + map to IOResult */
+        case .log(let value): /* log */; return nil
+        }
+    }
+}
+
+// AFTER: composable, macro-generated reducer + dispatcher
+@ComposableEffectRunner
+struct Feature: StateMachine {
+    // ... State, Input, IOResult, Action
+    @ComposableEffect enum IOEffect { case fetch(Int), log(Int) }
+
+    static func reduceInput(_ state: State, _ input: Input) -> Transition {
+        // Can compose freely
+        run(.concat(.log(state.count), .fetch(state.count)))
+    }
+}
+
+extension Feature: Feature.EffectRunner {
+    func runFetch(_ value: Int) -> IOResultStream { /* fetch */ }
+    func runLog(_ value: Int) -> IOResultStream { /* log */ }
+}
+```
+
+**Prompt: non-composable → composable**
+
+Copy/paste and fill in effect/result names when asking your AI assistant:
+
+> Convert this StateMachine to use `@ComposableEffectRunner`.
+> - Apply `@ComposableEffectRunner` to the feature type.
+> - Ensure `IOEffect` is annotated `@ComposableEffect` (the macro will add it if missing).
+> - Move each `runIOEffect` branch into the corresponding `{Feature}.EffectRunner` method `run<Case>` and return `IOResultStream`.
+> - Keep reducer composition using `.merge/.concat` helpers (now available on `IOEffect`).
+
+**Prompt: composable → non-composable**
+
+> Convert this StateMachine back to manual (non-composable) wiring.
+> - Remove `@ComposableEffectRunner` and `EffectRunner` conformance.
+> - Reintroduce a single `runIOEffect(_:)` that switches over `IOEffect` and returns `IOResult?` or `IOResultStream`.
+> - Replace composed calls with plain `IOEffect` cases or manually flatten `.merge/.concat` usage.
+
 ## Key Design Principles
 
 ### 1. Effect Abstraction
