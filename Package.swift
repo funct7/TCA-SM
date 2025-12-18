@@ -15,6 +15,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/pointfreeco/swift-composable-architecture", from: "1.0.0"),
+        .package(url: "https://github.com/pointfreeco/swift-case-paths", from: "1.0.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "509.0.0")
     ],
     targets: [
@@ -31,7 +32,8 @@ let package = Package(
             name: "StateMachine",
             dependencies: [
                 "StateMachineMacros",
-                .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
+                .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
+                .product(name: "CasePaths", package: "swift-case-paths")
             ]
         )
     ]
