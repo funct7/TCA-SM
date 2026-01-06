@@ -8,7 +8,8 @@ public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
         providingMembersOf declaration: some DeclGroupSyntax,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
-        let info = try EffectRunnerAnalyzer.analyze(declaration: declaration)
+        let options = try EffectRunnerOptions.parse(from: attribute)
+        let info = try EffectRunnerAnalyzer.analyze(declaration: declaration, options: options)
         return [info.makeEffectHandlerProtocol()] + info.makeComposableHelpers() + [info.makeRunIOEffect()]
     }
     
@@ -28,12 +29,45 @@ public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
     }
 }
 
+private struct EffectRunnerOptions {
+    var isBodyComposable: Bool
+
+    static func parse(from attribute: AttributeSyntax) throws -> Self {
+        guard let arguments = attribute.arguments else {
+            return .init(isBodyComposable: false)
+        }
+
+        switch arguments {
+        case .argumentList(let list):
+            var isBodyComposable: Bool = false
+            for element in list {
+                guard let label = element.label?.text else {
+                    throw MacroError.message("@ComposableEffectRunner only supports labeled arguments")
+                }
+                switch label {
+                case "isBodyComposable":
+                    guard let boolExpr = element.expression.as(BooleanLiteralExprSyntax.self) else {
+                        throw MacroError.message("@ComposableEffectRunner(isBodyComposable:) must be a boolean literal")
+                    }
+                    isBodyComposable = (boolExpr.literal.text == "true")
+                default:
+                    throw MacroError.message("Unknown @ComposableEffectRunner argument: \(label)")
+                }
+            }
+            return .init(isBodyComposable: isBodyComposable)
+        default:
+            throw MacroError.message("@ComposableEffectRunner only supports a labeled argument list, e.g. @ComposableEffectRunner(isBodyComposable: true)")
+        }
+    }
+}
+
 private struct EffectRunnerAnalyzer {
     let parentName: String
     let ioEffectCases: [IOEffectCase]
     let parentDecl: DeclGroupSyntax
+    let options: EffectRunnerOptions
     
-    static func analyze(declaration: some DeclGroupSyntax) throws -> Self {
+    static func analyze(declaration: some DeclGroupSyntax, options: EffectRunnerOptions) throws -> Self {
         let parentName: String
         let parentDecl: DeclGroupSyntax
         if let structDecl = declaration.as(StructDeclSyntax.self) {
@@ -54,7 +88,7 @@ private struct EffectRunnerAnalyzer {
             throw MacroError.message("@ComposableEffectRunner should not be used when IOEffect already declares merge/concat")
         }
         let cases = try ioEffectEnum.collectLeafCases()
-        return .init(parentName: parentName, ioEffectCases: cases, parentDecl: parentDecl)
+        return .init(parentName: parentName, ioEffectCases: cases, parentDecl: parentDecl, options: options)
     }
     
     func makeRunIOEffect() -> DeclSyntax {
@@ -120,14 +154,27 @@ private struct EffectRunnerAnalyzer {
             return ioEffect.map { $0.asComposableEffect().extract(applyIOEffect(_:)) } ?? .none
         }
         """
-        let body: DeclSyntax = """
-        \(raw: access)var body: some Reducer<State, Action> {
-            Reduce { state, action in
-                let transition = Self.reduce(state, action)
-                return apply(transition, to: &state)
+        let body: DeclSyntax
+        if options.isBodyComposable {
+            body = """
+            \(raw: access)var body: some Reducer<State, Action> {
+                nestedBody
+                Reduce { state, action in
+                    let transition = Self.reduce(state, action)
+                    return apply(transition, to: &state)
+                }
             }
+            """
+        } else {
+            body = """
+            \(raw: access)var body: some Reducer<State, Action> {
+                Reduce { state, action in
+                    let transition = Self.reduce(state, action)
+                    return apply(transition, to: &state)
+                }
+            }
+            """
         }
-        """
         return [reduce, applyIO, apply, body]
     }
 }
@@ -179,7 +226,7 @@ private struct IOEffectCase {
         let bindings = parameters.map { "let \($0.internalName)" }.joined(separator: ", ")
         let patternSuffix = bindings.isEmpty ? "" : "(\(bindings))"
         let arguments = parameters.map { $0.callArgument }.joined(separator: ", ")
-        let callSuffix = arguments.isEmpty ? "" : "(\(arguments))"
+        let callSuffix = arguments.isEmpty ? "()" : "(\(arguments))"
         return "case .\(name)\(patternSuffix): \(handlerName)\(callSuffix)"
     }
 }
