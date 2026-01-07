@@ -46,3 +46,21 @@ Action.IOResult == IOResult
     }
     
 }
+
+public extension StateMachineEventConvertible where IOResult == Never {
+    
+    static func ioResult(_ value: Never) -> Self { }
+    
+}
+
+public extension StateMachine where
+Action : StateMachineEventConvertible,
+Action.IOResult == IOResult,
+IOResult == Never
+{
+    
+    static func reduceIOResult(_ state: State, _ ioResult: Never) -> Transition { }
+    
+    func runIOEffect(_ ioEffect: Never) -> IOResultStream { }
+
+}
