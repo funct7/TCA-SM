@@ -2,58 +2,95 @@
 
 ## Overview
 
-TCA-SM enforces functional core/imperative shell architecture through type-level constraints in The Composable Architecture. It physically separates pure state transitions from IO effects, making architectural violations impossible rather than merely discouraged.
+TCA-SM enforces a functional core/imperative shell architecture in applications built with The Composable Architecture. It uses type-level constraints to physically separate pure state-transition logic from side effects, making architectural violations impossible rather than merely discouraged.
 
 ## Core Architecture
 
 ### StateMachine Protocol
 
-```swift
-protocol StateMachine : Reducer {
-    associatedtype Input : Sendable
-    associatedtype IOEffect : Sendable
-    associatedtype IOResult : Sendable
-    associatedtype EffectSequence : AsyncSequence where EffectSequence.Element == IOResult
+The `StateMachine` protocol is the heart of TCA-SM. It formalizes the separation of concerns between pure state transitions and effectful I/O operations.
 
+```swift
+public protocol StateMachine: Reducer {
+    associatedtype Input: Sendable
+    associatedtype IOEffect: Sendable
+    associatedtype IOResult: Sendable
+    typealias IOResultStream = AsyncStream<IOResult>
     typealias Transition = (State?, IOEffect?)
 
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
-    func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence
+    func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream
 }
 ```
 
-**Architectural Constraints**:
+**Key Changes from older versions:**
 
-- **Static reduce methods**: Enforce purity—no access to dependencies or instance state
-- **Instance runIOEffect**: Enables dependency injection for side effects
-- **Transition tuple**: Prevents coupling state calculation with effect execution
+- `EffectSequence` has been replaced by `IOResultStream`, which is a type alias for `AsyncStream<IOResult>`. This simplifies the protocol by standardizing on a concrete async sequence type.
+- `runIOEffect` now returns an `IOResultStream`, an `AsyncStream` of results, allowing an effect to produce multiple values over time.
 
-### Why Static vs Instance Methods
+### Architectural Constraints
+
+- **Static `reduce` methods**: `reduceInput` and `reduceIOResult` are static, ensuring they are pure functions with no access to dependencies or instance state.
+- **Instance `runIOEffect` method**: This method is where side effects live. It has access to the feature's dependencies (e.g., API clients, databases) via `self`.
+- **`Transition` tuple**: The `(State?, IOEffect?)` tuple returned by reducers decouples state calculation from effect execution. The new state is calculated first, and *then* the optional effect is run by the TCA runtime.
+
+### Handling Effects and Results
+
+The `runIOEffect` function is the designated place for all side effects. It takes an `IOEffect` and returns a stream of `IOResult` values.
 
 ```swift
-struct MyFeature : StateMachine {
-    @Dependency(\\.locationManager) var locationManager  // Available in runIOEffect
-    let apiService: any APIService                      // Available in runIOEffect
+struct Feature: StateMachine {
+    @Dependency(\.apiClient) var apiClient
 
-    // Static = pure, no dependencies access
-    static func reduceInput(_ state: State, _ input: Input) -> Transition { ... }
+    // ... State, Input, IOEffect, IOResult ...
 
-    // Instance = can access dependencies for side effects
-    func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence {
-        AsyncStream { continuation in
-            Task {
-                _ = await apiService.fetchData()  // ✅ Can access instance properties
-                continuation.finish()
+    func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream {
+        switch ioEffect {
+        case .fetchData:
+            // Use the .single helper for one-shot operations
+            return .single {
+                await .fetchResponse(apiClient.fetchData())
             }
+        case .subscribeToUpdates:
+            // Return a long-lived stream for subscriptions
+            return IOResultStream { continuation in
+                let cancellable = apiClient.observeUpdates { result in
+                    continuation.yield(.update(result))
+                }
+                continuation.onTermination = { _ in cancellable.cancel() }
+            }
+        case .logAnalytics:
+            // For fire-and-forget effects, return an empty stream
+            analytics.log("event")
+            return .init { $0.finish() }
         }
     }
 }
 ```
 
-## Action Mapping Pattern
+#### `AsyncStream.single` Helper
 
-### StateMachineEventConvertible Protocol
+For effects that produce a single result (like a network request), you can use the `AsyncStream.single` helper, which is included in the library. It creates a stream that asynchronously produces one element and then finishes.
+
+### Transition Helpers
+
+A set of static helper functions are provided on `StateMachine` to make creating `Transition` values more expressive.
+
+```swift
+extension StateMachine {
+    static var undefined: Transition { (nil, nil) } // No-op, useful for switch statements
+    static var identity: Transition { (nil, nil) }  // Alias for undefined
+    static func nextState(_ state: State) -> Transition { (state, nil) } // State change, no effect
+    static func run(_ effect: IOEffect) -> Transition { (nil, effect) } // Effect, no state change
+    static func transition(_ state: State, _ effect: IOEffect) -> Transition { (state, effect) } // State change and effect
+    static func unsafe(_ action: @escaping () -> Void) -> Transition { action(); return (nil, nil) } // Escape hatch for logging, etc.
+}
+```
+
+## Action Mapping
+
+The `StateMachineEventConvertible` protocol allows you to integrate `StateMachine` logic into a standard TCA `Action` enum, enabling gradual adoption and composition with other TCA features.
 
 ```swift
 protocol StateMachineEventConvertible {
@@ -66,510 +103,335 @@ protocol StateMachineEventConvertible {
 }
 ```
 
-Enables gradual adoption—mix StateMachine actions with standard TCA actions:
+**Example:**
 
 ```swift
 enum Action: StateMachineEventConvertible {
+    // State machine events
     case input(Input)
     case ioResult(IOResult)
-    case childAction(ChildFeature.Action)  // Non-SM reducer
+    // Other events
+    case child(ChildFeature.Action)
+    case onAppear
 
     static func map(_ action: Self) -> StateMachineEvent<Input, IOResult>? {
         switch action {
-        case .input(let input): .input(input)
-        case .ioResult(let result): .ioResult(result)
-        case .childAction: nil  // Handled separately
+        case .input(let input): return .input(input)
+        case .ioResult(let result): return .ioResult(result)
+        default: return nil // Other cases handled by a different reducer
         }
     }
 }
 ```
 
-## Transition Helpers
+## Composing Effects
 
-```swift
-extension StateMachine {
-    static var undefined: Transition { (nil, nil) }
-    static var identity: Transition { (nil, nil) }
-    static func nextState(_ state: State) -> Transition { (state, nil) }
-    static func run(_ effect: IOEffect) -> Transition { (nil, effect) }
-    static func transition(_ state: State, effect: IOEffect) -> Transition { (state, effect) }
-    static func unsafe(_ action: @escaping () -> Void) -> Transition { action(); return (nil, nil) }
-}
-```
+While reducers can only return a single `IOEffect` at a time, this `IOEffect` can be a composition of multiple smaller effects. TCA-SM provides macros to make this composition ergonomic.
 
-### ComposableEffect Macro
+### `@ComposableEffect` Macro
 
-Add the `@ComposableEffect` attribute to any effect enum to synthesize scoped helpers that lift enum cases into `ComposableEffect` values. This keeps reducer code terse even when mixing nested combinators:
+Add the `@ComposableEffect` attribute to your `IOEffect` enum. The macro synthesizes:
+1.  `merge([Self])` and `concat([Self])` cases.
+2.  Static factory methods `.merge(Self...)` and `.concat(Self...)` for convenience.
+3.  An `asComposableEffect()` method to convert the enum into a `ComposableEffect` type used by the runtime.
 
 ```swift
 @ComposableEffect
 enum IOEffect {
     case fetch(Int)
-    case print(Int)
+    case log(String)
 }
 
+// In your reducer:
 static func reduceInput(_ state: State, _ input: Input) -> Transition {
     switch input {
-    case .numberFactButtonTapped:
-        run(.concat(
-            .fetch(state.count),
-            .merge(
-                .print(state.count),
-                .print(state.count * 2)
-            )
-        ))
+    case .buttonTapped:
+        // Run effects in parallel
+        return run(.merge(.fetch(1), .log("fetching")))
+    case .anotherButtonTapped:
+        // Run effects sequentially
+        return run(.concat(.log("step 1"), .log("step 2")))
     }
 }
 ```
 
-The macro-generated functions honor the enum's access control, so `public enum` cases yield `public static func fetch(...) -> ComposableEffect` helpers that downstream modules can call without wrapping cases in `.just` manually.
+### `@ComposableEffectRunner` Macro
 
-### ComposableEffectRunner Macro
+For a fully automated setup, apply the `@ComposableEffectRunner` attribute to your `StateMachine` feature type (struct or actor). It does several things:
 
-`@ComposableEffectRunner` belongs on the feature type (struct/actor) and does more than `@ComposableEffect` alone:
+1.  **Auto-applies `@ComposableEffect`**: It ensures the nested `IOEffect` enum is composable.
+2.  **Generates Reducer Body**: It synthesizes the `reduce`, `applyIOEffect`, `apply`, and `body` properties required to run the state machine, including logic to handle composed effects.
+3.  **Generates `EffectRunner` Protocol**: It creates a private `{FeatureName}.EffectRunner` protocol with a `run<CaseName>` method for each case in your `IOEffect` enum.
+4.  **Generates `runIOEffect` Dispatcher**: It implements the main `runIOEffect` method for you, which dispatches each effect case to the corresponding `EffectRunner` method.
 
-- It auto-applies `@ComposableEffect` to the nested `IOEffect` enum if you didn't add it yourself.
-- It synthesizes composition-aware reducer plumbing (`reduce`, `applyIOEffect`, `apply`, `body`) so your `Transition` can keep using plain `IOEffect?` while still emitting composed effects like `.merge`/`.concat` in reducer code.
-- It generates a `runIOEffect(_:) -> IOResultStream` dispatcher plus a private `EffectRunner` protocol with per-case methods.
+You conform your feature to the generated `EffectRunner` protocol and implement the per-case methods.
 
-If you only use `@ComposableEffect` on `IOEffect`, you will still have to hand-roll composition extraction and reducer wiring. To get the composable reducer behavior, apply `@ComposableEffectRunner` to your feature and conform to the synthesized `{Feature}.EffectRunner` by implementing one method per `IOEffect` case. Move the logic you previously wrote in `runIOEffect` into those per-case methods; the macro-routed `runIOEffect(_:)` will call them for you.
-
-**Minimal example**
-
+**Minimal Example:**
 ```swift
 @ComposableEffectRunner
 struct Feature: StateMachine {
     struct State: Equatable { var count = 0 }
     enum Input { case tap }
-
-    // You may omit this annotation; the runner macro will add it if missing.
-    @ComposableEffect
-    enum IOEffect {
+    enum IOEffect { // @ComposableEffect is added automatically
         case fetch(Int)
-        case log(Int)
+        case log(String)
     }
-
     typealias IOResult = TaskResult<String>
     typealias Action = StateMachineEvent<Input, IOResult>
 
     static func reduceInput(_ state: State, _ input: Input) -> Transition {
-        // Composition stays ergonomic in reducers.
-        run(.concat(
-            .merge(.log(state.count), .log(state.count * 2)),
-            .fetch(state.count)
-        ))
+        run(.concat(.log("Tapped"), .fetch(state.count)))
     }
 
     static func reduceIOResult(_ state: State, _ result: IOResult) -> Transition {
-        nextState(state) // handle result normally
+        // Handle fetch result
+        return nextState(state)
     }
 }
 
-// The macro synthesizes Feature.EffectRunner; implement one method per IOEffect case.
+// Conform to the synthesized protocol
 extension Feature: Feature.EffectRunner {
     func runFetch(_ value: Int) -> IOResultStream {
-        IOResultStream { continuation in
-            let task = Task {
-                do {
-                    let (data, _) = try await URLSession.shared
-                        .data(from: URL(string: "https://numbersapi.com/\(value)/trivia")!)
-                    continuation.yield(.success(String(decoding: data, as: UTF8.self)))
-                } catch {
-                    continuation.yield(.failure(error))
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        .single {
+            // ... perform fetch and return result
+            .success("Result")
         }
     }
 
-    func runLog(_ value: Int) -> IOResultStream {
-        IOResultStream { continuation in
-            continuation.yield(.success("log: \(value)"))
-            continuation.finish()
+    func runLog(_ message: String) -> IOResultStream {
+        print(message)
+        return .init { $0.finish() } // No result
+    }
+}
+```
+
+## Composing State Machines
+
+The `@ComposableEffectRunner` macro provides a powerful mechanism for composing a `StateMachine` feature within a parent reducer, just like any other TCA reducer.
+
+### Embedding a StateMachine in a Parent Feature
+
+This is the most common composition pattern. The parent is a standard TCA `Reducer`, and the child is a `StateMachine`.
+
+**1. Prepare the Child StateMachine**
+
+To make a `StateMachine` embeddable, add `@ComposableEffectRunner(isBodyComposable: true)` to it. This tells the macro to generate a `body` property that allows it to be composed in another reducer's `body`.
+
+```swift
+@ComposableEffectRunner(isBodyComposable: true) // Crucial for composition
+struct ChildFeature: StateMachine {
+    // ... State, Input, IOEffect, IOResult, Action
+    // ... Reducer logic and EffectRunner conformance
+    // NO 'body' property is needed here; the macro generates it.
+}
+```
+
+**2. Create the Parent Reducer**
+
+The parent can be any standard TCA `Reducer`. It holds the child's state and scopes actions to it.
+
+```swift
+// ParentFeature is a standard Reducer, not a StateMachine
+struct ParentFeature: Reducer {
+    @ObservableState
+    struct State: Equatable {
+        var child: ChildFeature.State
+        // ... other parent state
+    }
+
+    enum Action {
+        case child(ChildFeature.Action)
+        // ... other parent actions
+    }
+
+    var body: some Reducer<State, Action> {
+        // Scope to the child StateMachine. This uses the 'body'
+        // generated by @ComposableEffectRunner on ChildFeature.
+        Scope(state: \.child, action: \.child) {
+            ChildFeature()
+        }
+
+        // Parent's own reduction logic
+        Reduce { state, action in
+            switch action {
+            // The parent can observe results from the child
+            case .child(.ioResult(let result)):
+                print("Child produced a result: \(result)")
+                // Parent can change its own state or run its own effects
+                // in response to the child's output.
+                return .none
+
+            default:
+                return .none
+            }
         }
     }
 }
 ```
 
-**Before vs After (manual vs composable)**
+**Key Points:**
+- **Parent:** A standard `Reducer`. It uses `Scope` to embed the child.
+- **Child:** A `StateMachine` with `@ComposableEffectRunner(isBodyComposable: true)`.
+- **Communication:** The parent can send actions to the child and observe the child's `IOResult` to react to its outputs.
+
+### Having a StateMachine as a Parent (`nestedBody`)
+
+It's less common, but a `StateMachine` can also act as a parent and contain other reducers.
+
+When you use `@ComposableEffectRunner(isBodyComposable: true)`, the macro generates a `body` that looks like this:
 
 ```swift
-// BEFORE: manual plumbing, no composition helpers
-@ComposableEffect
-enum IOEffect { case fetch(Int), log(Int) }
-
-struct Feature: StateMachine {
-    // ... State, Input, IOResult, Action
-
-    static func reduceInput(_ state: State, _ input: Input) -> Transition {
-        // Must return plain IOEffect (no merge/concat helpers)
-        run(.fetch(state.count))
+var body: some Reducer<State, Action> {
+    nestedBody // <--- You must provide this
+    Reduce { state, action in
+        // ... state machine logic ...
     }
+}
+```
 
-    func runIOEffect(_ effect: IOEffect) async -> IOResult? {
-        switch effect {
-        case .fetch(let value): /* fetch + map to IOResult */
-        case .log(let value): /* log */; return nil
+You must then implement the `nestedBody` property on your `StateMachine` to hold the child reducers.
+
+```swift
+@ComposableEffectRunner(isBodyComposable: true)
+struct ParentStateMachine: StateMachine {
+    // ... StateMachine implementation ...
+
+    // You provide nestedBody to compose children
+    var nestedBody: some Reducer<State, Action> {
+        Scope(state: \.child, action: \.child) {
+            SomeOtherChildFeature()
         }
     }
 }
+```
 
-// AFTER: composable, macro-generated reducer + dispatcher
+## Testing
+
+Testing is a core strength of the architecture promoted by TCA-SM.
+
+### Testing Pure Reducers
+
+Because `reduceInput` and `reduceIOResult` are static, pure functions, you can test state transitions directly and synchronously, without needing a `TestStore`.
+
+```swift
+func testLoginInput() {
+    // Test that the correct state change and effect are requested
+    let (state, effect) = Login.reduceInput(.init(), .didTapLoginButton)
+    XCTAssertEqual(state?.isLoading, true)
+    XCTAssertEqual(effect, .authenticate("user", "pass"))
+}
+```
+
+For integration tests, you can use a `TestStore` from the `ComposableArchitecture` library. This is especially useful for `StateMachine`s that do not use `@ComposableEffectRunner`. You can mock the `runIOEffect` by providing a test-specific implementation.
+
+```swift
+func testFullFlow() async {
+    // Create a test-specific version of the feature for mocking effects
+    struct TestFeature: StateMachine {
+        // Implement the protocol...
+        
+        // Override runIOEffect to return mock data
+        func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream {
+            switch ioEffect {
+            case .fetch:
+                return .single { .success("mock data") }
+            default: return .init { $0.finish() }
+            }
+        }
+    }
+
+    let store = TestStore(initialState: TestFeature.State()) {
+        TestFeature()
+    }
+
+    await store.send(.input(.didTapButton)) {
+        $0.isLoading = true
+    }
+    await store.receive(\.ioResult.success) {
+        $0.data = "mock data"
+        $0.isLoading = false
+    }
+}
+```
+
+### Testing Composable Effect Runners
+
+When using `@ComposableEffectRunner`, testing becomes even simpler. You don't need to create a separate test-specific feature type. The recommended approach is to leverage TCA's dependency injection system.
+
+Your `EffectRunner` methods should use dependencies from the `@Dependency` property wrapper to perform their work.
+
+```swift
+// In your feature
 @ComposableEffectRunner
 struct Feature: StateMachine {
-    // ... State, Input, IOResult, Action
-    @ComposableEffect enum IOEffect { case fetch(Int), log(Int) }
+    @Dependency(\.apiClient) var apiClient
+    // ...
 
-    static func reduceInput(_ state: State, _ input: Input) -> Transition {
-        // Can compose freely
-        run(.concat(.log(state.count), .fetch(state.count)))
-    }
-}
-
-extension Feature: Feature.EffectRunner {
-    func runFetch(_ value: Int) -> IOResultStream { /* fetch */ }
-    func runLog(_ value: Int) -> IOResultStream { /* log */ }
-}
-```
-
-**Prompt: non-composable → composable**
-
-Copy/paste and fill in effect/result names when asking your AI assistant:
-
-> Convert this StateMachine to use `@ComposableEffectRunner`.
-> - Apply `@ComposableEffectRunner` to the feature type.
-> - Ensure `IOEffect` is annotated `@ComposableEffect` (the macro will add it if missing).
-> - Move each `runIOEffect` branch into the corresponding `{Feature}.EffectRunner` method `run<Case>` and return `IOResultStream`.
-> - Keep reducer composition using `.merge/.concat` helpers (now available on `IOEffect`).
-
-**Prompt: composable → non-composable**
-
-> Convert this StateMachine back to manual (non-composable) wiring.
-> - Remove `@ComposableEffectRunner` and `EffectRunner` conformance.
-> - Reintroduce a single `runIOEffect(_:)` that switches over `IOEffect` and returns `IOResult?` or `IOResultStream`.
-> - Replace composed calls with plain `IOEffect` cases or manually flatten `.merge/.concat` usage.
-
-## Key Design Principles
-
-### 1. Effect Abstraction
-
-Abstract implementation details behind semantic boundaries. IO runners perform side effects and surface outcomes as `IOResult` values without making decisions:
-
-```swift
-enum IOEffect {
-    case authenticate(username: String, password: String)
-}
-
-enum IOResult {
-    case loginResponse(Result<Token, NetworkError>)
-    case profileResponse(Result<Profile, NetworkError>)
-}
-
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
-    switch effect {
-    case let .authenticate(username, password):
-        return AsyncStream { continuation in
-            Task {
-                // Pure IO: execute requests and surface outcomes, no branching
-                do {
-                    let token = try await api.login(username, password)
-                    continuation.yield(.loginResponse(.success(token)))
-                } catch {
-                    continuation.yield(.loginResponse(.failure(.network(error))))
-                }
-
-                do {
-                    let profile = try await api.fetchProfile()
-                    continuation.yield(.profileResponse(.success(profile)))
-                } catch {
-                    continuation.yield(.profileResponse(.failure(.network(error))))
-                }
-
-                continuation.finish()
-            }
+    // EffectRunner conformance
+    func runFetchData() -> IOResultStream {
+        .single {
+            await .dataResponse(self.apiClient.fetchData())
         }
     }
 }
 ```
 
-### 2. State-Driven Cancellation
-
-State transitions implicitly manage effect lifecycle:
+In your test, you can then use `TestStore` to override the dependency with a mock version. This allows you to control the data returned by the effect and assert that the correct state changes occur.
 
 ```swift
-static func reduceInput(_ state: State, _ input: Input) -> Transition {
-    switch (state, input) {
-    case (.loading, .search(let newQuery)):
-        // Previous search implicitly cancelled by state change
-        return transition(.loading(query: newQuery), effect: .search(newQuery))
+import ComposableArchitecture
+
+@MainActor
+func testFeatureWithRunner() async {
+    let store = TestStore(initialState: Feature.State()) {
+        Feature()
+    } withDependencies: {
+        // Override the dependency for this test
+        $0.apiClient.fetchData = { "mocked data" }
+    }
+
+    await store.send(.input(.didTapButton)) {
+        // State changes from the input
+        $0.isLoading = true
+    }
+    
+    // Assert that the IOResult from the mocked dependency
+    // is received and causes the correct state change.
+    await store.receive(\.ioResult.dataResponse) {
+        $0.isLoading = false
+        $0.data = "mocked data"
     }
 }
 ```
+This approach is powerful because it allows you to test the *real* implementation of your `EffectRunner` methods, with only the external dependencies swapped out.
 
-### 3. Multi-Step Operations as State Phases
-
-```swift
-enum State {
-    case ready
-    case authenticating
-    case fetchingUser(token: Token)
-    case fetchingPosts(user: User, token: Token)
-    case complete(user: User, posts: [Post])
-    case failed(Error)
-}
-```
-
-### 4. Deterministic Error Handling
-
-All errors flow through IOResult:
-
-```swift
-enum IOResult {
-    case dataLoaded(Result<Data, NetworkError>)
-    case userSaved(Result<Void, DatabaseError>)
-}
-
-// Never:
-func runIOEffect(_ effect: IOEffect) throws -> EffectSequence  // ❌
-```
-
-### 5. Decision Logic in Reducers
-
-```swift
-// Wrong: Logic in IO
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
-    switch effect {
-    case .fetchData(let useCache):
-        // if useCache && cache.hasData {  // ❌ Decision in IO
-        //     yield .dataFetched(cache.data)
-        // }
-        return AsyncStream { continuation in
-            continuation.finish()
-        }
-    }
-}
-
-// Correct: Logic in reducer
-static func reduceInput(_ state: State, _ input: Input) -> Transition {
-    case .load:
-        if state.cacheValid {
-            return nextState(.loaded(state.cachedData))  // ✅ Pure decision
-        } else {
-            return transition(.loading, effect: .fetchFreshData)
-        }
-}
-```
-
-## Integration Patterns
-
-### Standard Body Implementation
-
-```swift
-var body: some Reducer<State, Action> {
-    Reduce { state, action in
-        let transition = Self.reduce(state, action)
-        return apply(transition, to: &state)
-    }
-}
-```
-
-### Composed with Child Reducers
-
-```swift
-var body: some Reducer<State, Action> {
-    // Child reducer scope
-    Scope(state: \\.mapState, action: \\.mapAction) {
-        MapFeature()
-    }
-
-    // Handle child interactions (can produce child effects)
-    Reduce { state, action in
-        switch action {
-        case .input(let input):
-            Self.reduceInput(state, input).map(Action.mapAction)
-        case .ioResult(let ioResult):
-            Self.reduceIOResult(state, ioResult).map(Action.mapAction)
-        case .mapAction(let mapAction):
-            reduceMapEvent(state, mapAction).map(Action.mapAction)
-        }
-    }
-
-    // StateMachine logic (produces IO effects)
-    Reduce { state, action in
-        let transition = Self.reduce(state, action)
-        return apply(transition, to: &state)
-    }
-}
-```
-
-## Testing Strategy
-
-### Pure Function Testing
-
-```swift
-func testStateTransitions() {
-    // Synchronous, deterministic tests
-    let result = Feature.reduceInput(.idle, .load)
-    XCTAssertEqual(result.0, .loading)
-    XCTAssertEqual(result.1, .fetchData)
-}
-```
-
-### IO Mocking
-
-```swift
-struct MockFeature: StateMachine {
-    let mockResults: [IOEffect: IOResult]
-
-    func runIOEffect(_ effect: IOEffect) async -> IOResult? {
-        mockResults[effect]
-    }
-}
-```
-
-## Migration Patterns
-
-### From TCA
-
-```swift
-// TCA Style
-case .buttonTapped:
-    state.isLoading = true
-    return .run { send in
-        do {
-            let data = try await api.fetch()
-            await send(.dataLoaded(data))
-        } catch {
-            await send(.loadFailed(error))
-        }
-    }
-
-// TCA-SM Style
-static func reduceInput(_ state: State, _ input: Input) -> Transition {
-    case .buttonTapped:
-        return transition(.loading, effect: .fetchData)
-}
-
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
-    switch effect {
-    case .fetchData:
-        return AsyncStream { continuation in
-            Task {
-                do {
-                    let data = try await api.fetch()
-                    continuation.yield(.dataFetched(data))
-                } catch {
-                    continuation.yield(.fetchFailed(error))
-                }
-                continuation.finish()
-            }
-        }
-    }
-}
-
-// Migrating from single-result to stream:
-// Old: async -> IOResult?
-// New: return AsyncStream<IOResult> { continuation in
-//   if let result = oldReturnValue { continuation.yield(result) }
-//   continuation.finish()
-// }
-```
-
-## Migration Patterns
+## Migration
 
 ### From TCA to TCA-SM
 
+**TCA Style:**
 ```swift
-// TCA Style
 case .buttonTapped:
     state.isLoading = true
     return .run { send in
-        do {
-            let data = try await api.fetch()
-            await send(.dataLoaded(data))
-        } catch {
-            await send(.loadFailed(error))
-        }
+        let result = await apiClient.fetchData()
+        await send(.dataLoaded(result))
     }
+```
 
-// TCA-SM Style
+**TCA-SM Style:**
+```swift
+// Reducer (Pure)
 static func reduceInput(_ state: State, _ input: Input) -> Transition {
     case .buttonTapped:
-        return transition(.loading, effect: .fetchData)
+        return transition(.init(isLoading: true), .fetchData)
 }
 
-func runIOEffect(_ effect: IOEffect) -> EffectSequence {
-    switch effect {
-    case .fetchData:
-        return AsyncStream { continuation in
-            Task {
-                do {
-                    let data = try await api.fetch()
-                    continuation.yield(.dataFetched(data))
-                } catch {
-                    continuation.yield(.fetchFailed(error))
-                }
-                continuation.finish()
-            }
-        }
+// Effect Runner (Impure)
+func runFetchData() -> IOResultStream {
+    .single {
+        .dataLoaded(await apiClient.fetchData())
     }
 }
 ```
-
-## Common Patterns
-
-### Resource Validation
-
-```swift
-case .purchase:
-    if state.points < cost {
-        return nextState(withVar(state, \\.showInsufficientPointsAlert, true))
-    } else {
-        return transition(
-            withVar(state, \\.points, state.points - cost),
-            effect: .completePurchase
-        )
-    }
-```
-
-### Retry Logic
-
-```swift
-static func reduceIOResult(_ state: State, _ result: IOResult) -> Transition {
-    switch (state, result) {
-    case (.active(let count), .requestFailed(let error)):
-        if count < 3 {
-            return transition(.active(retryCount: count + 1), effect: .retryRequest)
-        } else {
-            return nextState(.failed(error, retryCount: count))
-        }
-    }
-}
-```
-
-## Architectural Trade-offs
-
-**Enforce Through Types**:
-
-- Static methods prevent dependency access in pure functions
-- Transition tuple prevents effect execution during state calculation
-- IOResult wrapping makes error handling deterministic
-
-**Concurrency Model**:
-
-- Single IOEffect per transition (compose through state, not effects)
-- Cancellation implicit in state transitions
-- Background operations tracked in State or instance variables
-
-**When to Use**:
-
-- Complex state machines with clear phases
-- Business logic requiring high testability
-- Systems where maintenance cost > initial development speed
-
-**When to Avoid**:
-
-- Simple UI-only features
-- Prototypes requiring rapid iteration
-- Features primarily about TCA child composition
+This refactoring isolates the side effect (`apiClient.fetchData`) from the state transition logic, improving testability and clarity.
