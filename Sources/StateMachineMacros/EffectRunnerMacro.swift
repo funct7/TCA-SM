@@ -62,23 +62,37 @@ private struct ForwardMapper {
         case input
         case ioResult
     }
+    
+    enum Mode {
+        case function(name: String)              // Legacy: @ForwardInput(\.child) on a function
+        case extraction(sourceCasePath: String)  // New: @ForwardInput(\.childTapped, to: \.child)
+    }
+    
     let type: MapperType
-    let functionName: String
-    let childKeyPath: String
+    let mode: Mode
     let childActionCase: String
 
     func makeEffectSend(parentActionVariable: String) -> String {
-        let actionVar = "\(childKeyPath)Action"
+        let actionVar = "\(childActionCase)Action"
         // e.g. (.input(child1Action)) or (.ioResult(child1Action))
         let childPayload = type == .input ? "(.input(\(actionVar)))" : "(.ioResult(\(actionVar)))"
         
-        // We properly interpolate the values into the string.
-        // Note: indentation here is for the generated code's readability, but primarily must be valid Swift.
-        return """
-        if let \(actionVar) = Self.\(functionName)(\(parentActionVariable)) {
-            effects.append(.send(.\(childActionCase)\(childPayload)))
+        switch mode {
+        case .function(let functionName):
+            // Legacy: call the user's mapping function
+            return """
+            if let \(actionVar) = Self.\(functionName)(\(parentActionVariable)) {
+                effects.append(.send(.\(childActionCase)\(childPayload)))
+            }
+            """
+        case .extraction(let sourceCasePath):
+            // New: extract using CaseKeyPath subscript
+            return """
+            if let \(actionVar) = \(parentActionVariable)[case: \(sourceCasePath)] {
+                effects.append(.send(.\(childActionCase)\(childPayload)))
+            }
+            """
         }
-        """
     }
 }
 
@@ -116,15 +130,36 @@ private struct EffectRunnerAnalyzer {
         var inputMappers: [ForwardMapper] = []
         var ioResultMappers: [ForwardMapper] = []
         
+        // Scan struct/actor attributes for extraction-mode @ForwardInput/@ForwardIOResult
+        for attr in collectForwardAttributes(from: parentDecl, named: "ForwardInput") {
+            if let mapper = try parseForwardAttribute(attr, type: .input) {
+                inputMappers.append(mapper)
+            }
+        }
+        for attr in collectForwardAttributes(from: parentDecl, named: "ForwardIOResult") {
+            if let mapper = try parseForwardAttribute(attr, type: .ioResult) {
+                ioResultMappers.append(mapper)
+            }
+        }
+        
+        // Scan function members for legacy @ForwardInput/@ForwardIOResult (single-arg on functions)
         for member in parentDecl.memberBlock.members {
             if let funcDecl = member.decl.as(FunctionDeclSyntax.self) {
                 if let attr = (funcDecl as DeclSyntaxProtocol).attribute(named: "ForwardInput") {
-                    let keyPath = try parseKeyPathArgument(from: attr)
-                    inputMappers.append(.init(type: .input, functionName: funcDecl.name.text, childKeyPath: keyPath, childActionCase: keyPath))
+                    // Only process single-arg (legacy) form here
+                    let args = attr.arguments?.as(LabeledExprListSyntax.self)
+                    if args?.count == 1 {
+                        let keyPath = try parseKeyPathArgument(from: attr)
+                        inputMappers.append(.init(type: .input, mode: .function(name: funcDecl.name.text), childActionCase: keyPath))
+                    }
                 }
                 if let attr = (funcDecl as DeclSyntaxProtocol).attribute(named: "ForwardIOResult") {
-                    let keyPath = try parseKeyPathArgument(from: attr)
-                    ioResultMappers.append(.init(type: .ioResult, functionName: funcDecl.name.text, childKeyPath: keyPath, childActionCase: keyPath))
+                    // Only process single-arg (legacy) form here
+                    let args = attr.arguments?.as(LabeledExprListSyntax.self)
+                    if args?.count == 1 {
+                        let keyPath = try parseKeyPathArgument(from: attr)
+                        ioResultMappers.append(.init(type: .ioResult, mode: .function(name: funcDecl.name.text), childActionCase: keyPath))
+                    }
                 }
             }
         }
@@ -306,6 +341,66 @@ private extension EffectRunnerAnalyzer {
         }
         
         // Fallback: Just return the string representation of the component (e.g. "counter" or ".counter")
+        let raw = component.trimmedDescription
+        return raw.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+    
+    /// Collects all attributes with the given name from the declaration's attribute list
+    static func collectForwardAttributes(from decl: DeclGroupSyntax, named name: String) -> [AttributeSyntax] {
+        var results: [AttributeSyntax] = []
+        for element in decl.attributes {
+            if case let .attribute(attr) = element, attr.attributeName.trimmedDescription == name {
+                results.append(attr)
+            }
+        }
+        return results
+    }
+    
+    /// Parses a two-argument forward attribute (@ForwardInput(\Input.Cases.x, to: \Action.Cases.y))
+    /// Returns nil if it's a single-argument (legacy) form
+    static func parseForwardAttribute(_ attr: AttributeSyntax, type: ForwardMapper.MapperType) throws -> ForwardMapper? {
+        guard let arguments = attr.arguments?.as(LabeledExprListSyntax.self) else {
+            return nil
+        }
+        
+        let argumentList = Array(arguments)
+        
+        // Single argument = legacy mode, handled elsewhere
+        if argumentList.count == 1 {
+            return nil
+        }
+        
+        guard argumentList.count == 2 else {
+            throw MacroError.message("Forward attribute expects 1 or 2 arguments")
+        }
+        
+        // Parse first argument: source case path (full expression for generated code)
+        let sourceCasePath = argumentList[0].expression.trimmedDescription
+        
+        // Parse second argument: must have label "to"
+        guard argumentList[1].label?.text == "to" else {
+            throw MacroError.message("Second argument must be labeled 'to:'")
+        }
+        
+        // Extract child action case name from the "to:" keypath
+        let childActionCase = try parseKeyPathLastComponent(from: argumentList[1].expression)
+        
+        return ForwardMapper(type: type, mode: .extraction(sourceCasePath: sourceCasePath), childActionCase: childActionCase)
+    }
+    
+    static func parseKeyPathLastComponent(from expression: ExprSyntax) throws -> String {
+        guard let keyPathExpr = expression.as(KeyPathExprSyntax.self) else {
+            throw MacroError.message("Argument must be a KeyPath literal")
+        }
+        
+        guard let component = keyPathExpr.components.last else {
+            throw MacroError.message("KeyPath must have at least one component")
+        }
+        
+        if let propertyComponent = component.as(KeyPathPropertyComponentSyntax.self) {
+            return propertyComponent.declName.baseName.text
+        }
+        
         let raw = component.trimmedDescription
         return raw.trimmingCharacters(in: CharacterSet(charactersIn: "."))
     }
