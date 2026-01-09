@@ -233,6 +233,56 @@ extension Feature: Feature.EffectRunner {
 }
 ```
 
+### Forwarding Inputs to Child State Machines
+
+When your State Machine manages other child State Machines, you often need to route parent `Input` (or `IOResult`) directly to the child's `Input` (or `IOResult`) without manually triggering effects in `reduceInput`.
+
+The `@ForwardInput` and `@ForwardIOResult` attributes automate this routing.
+
+**Requirements**:
+1.  **Main Body Definition**: The mapping function must be defined in the main `struct` or `actor` body (not in an extension), as macros cannot see extension members.
+2.  **Child Structure**: The child feature must follow the State Machine Action pattern (having `.input` and `.ioResult` cases).
+3.  **Attribute Argument**: Provide the CasePath (e.g., `\Action.Cases.child`) to the parent Action case that wraps the child. Note: This requires the `Action` enum to be `@CasePathable`.
+
+**Example**:
+
+```swift
+@ComposableEffectRunner
+struct ParentFeature: StateMachine {
+    struct State: Equatable {
+        var child: ChildFeature.State
+    }
+    enum Input {
+        case childTapped(ChildFeature.Input)
+    }
+    // ... IOEffect, IOResult ...
+
+    @CasePathable // Required for \Action.Cases syntax
+    enum Action: StateMachineEventConvertible {
+        case input(Input)
+        case ioResult(IOResult)
+        case child(ChildFeature.Action) // Wraps child State Machine
+        // ... implementation ...
+    }
+    
+    // Automate forwarding parent Input -> Child Input
+    // Use \Action.Cases.child syntax to reference the enum case.
+    @ForwardInput(\Action.Cases.child)
+    static func forwardChildInput(_ input: Input) -> ChildFeature.Input? {
+        switch input {
+        case .childTapped(let childInput):
+            return childInput
+        default:
+             return nil
+        }
+    }
+    
+    // The macro injects code into the body to:
+    // 1. Call forwardChildInput(input)
+    // 2. If valid, send .child(.input(result))
+}
+```
+
 **Prompt: non-composable → composable**
 
 Copy/paste and fill in effect/result names when asking your AI assistant:
