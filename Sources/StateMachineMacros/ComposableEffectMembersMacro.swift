@@ -7,7 +7,9 @@ import SwiftSyntaxMacros
 struct StateMachinePlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         ComposableEffectMembersMacro.self,
-        EffectRunnerMacro.self
+        EffectRunnerMacro.self,
+        ForwardInputMacro.self,
+        ForwardIOResultMacro.self,
     ]
 }
 
