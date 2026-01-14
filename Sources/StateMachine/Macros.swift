@@ -32,3 +32,95 @@ public macro ForwardIOResult<Root, Value>(_ child: KeyPath<Root, Value>) = #exte
 
 @attached(peer, names: prefixed(_))
 public macro NestedBody() = #externalMacro(module: "StateMachineMacros", type: "NestedBodyMacro")
+
+// MARK: - ComposableStateMachine
+
+/// Enables state machine composition by generating `body` with `NestedStateMachine` reducers.
+///
+/// Use this macro on features that compose child state machines. It reads:
+/// - `@NestedState` markers on State properties to discover child state paths
+/// - `@Forward` markers on Input/IOResult enum cases to discover action mappings
+///
+/// Example:
+/// ```swift
+/// @ComposableStateMachine
+/// struct ParentFeature: StateMachine {
+///     struct State {
+///         @NestedState var counter: CounterFeature.State
+///     }
+///     enum Input {
+///         @Forward(CounterFeature.Input.incrementTapped)
+///         case counterIncrement
+///     }
+///     // ...
+/// }
+/// ```
+@attached(member, names: arbitrary)
+public macro ComposableStateMachine() = #externalMacro(
+    module: "StateMachineMacros",
+    type: "ComposableStateMachineMacro"
+)
+
+// MARK: - NestedState
+
+/// Marks a State property as containing a nested feature's state.
+///
+/// The `@ComposableStateMachine` macro reads this to discover child state paths.
+///
+/// Example:
+/// ```swift
+/// struct State {
+///     @NestedState var counter: CounterFeature.State
+///     @NestedState var presets: PresetsFeature.State
+/// }
+/// ```
+@attached(peer)
+public macro NestedState() = #externalMacro(
+    module: "StateMachineMacros",
+    type: "NestedStateMacro"
+)
+
+// MARK: - Forward
+
+/// Marks an Input or IOResult case as forwarding to a child feature's action.
+///
+/// The `@ComposableStateMachine` macro reads this to generate action mappings.
+///
+/// Example:
+/// ```swift
+/// enum Input {
+///     @Forward(CounterFeature.Input.incrementTapped)
+///     case counterIncrement
+///
+///     @Forward(CounterFeature.Input.setValue)
+///     case counterSetValue(Int)  // associated values are forwarded
+/// }
+///
+/// enum IOResult {
+///     @Forward(PresetsFeature.IOResult.self)
+///     case presetsResult(PresetsFeature.IOResult)
+/// }
+/// ```
+@attached(peer)
+public macro Forward<T>(_ target: T) = #externalMacro(
+    module: "StateMachineMacros",
+    type: "ForwardMacro"
+)
+
+// MARK: - NestedFeature
+
+/// Declares a nested feature for edge cases like computed properties.
+///
+/// Use this when `@NestedState` on a stored property isn't sufficient.
+///
+/// Example:
+/// ```swift
+/// @ComposableStateMachine
+/// @NestedFeature(CounterFeature.self, state: \.derivedCounter)
+/// struct Feature: StateMachine { ... }
+/// ```
+@attached(peer)
+public macro NestedFeature<T>(_ feature: T.Type, state: KeyPath<Any, Any>) = #externalMacro(
+    module: "StateMachineMacros",
+    type: "NestedFeatureMacro"
+)

@@ -10,6 +10,11 @@ struct StateMachinePlugin: CompilerPlugin {
         EffectRunnerMacro.self,
         ForwardInputMacro.self,
         ForwardIOResultMacro.self,
+        // New macros for state machine composition
+        ComposableStateMachineMacro.self,
+        NestedStateMacro.self,
+        ForwardMacro.self,
+        NestedFeatureMacro.self,
     ]
 }
 

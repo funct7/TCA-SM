@@ -13,13 +13,13 @@ protocol StateMachine : Reducer {
     associatedtype Input : Sendable
     associatedtype IOEffect : Sendable
     associatedtype IOResult : Sendable
-    associatedtype EffectSequence : AsyncSequence where EffectSequence.Element == IOResult
+    typealias IOResultStream = AsyncStream<IOResult>
 
     typealias Transition = (State?, IOEffect?)
 
     static func reduceInput(_ state: State, _ input: Input) -> Transition
     static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition
-    func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence
+    func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream
 }
 ```
 
@@ -249,6 +249,265 @@ Copy/paste and fill in effect/result names when asking your AI assistant:
 > - Remove `@ComposableEffectRunner` and `EffectRunner` conformance.
 > - Reintroduce a single `runIOEffect(_:)` that switches over `IOEffect` and returns `IOResult?` or `IOResultStream`.
 > - Replace composed calls with plain `IOEffect` cases or manually flatten `.merge/.concat` usage.
+
+## State Machine Composition
+
+### ComposableStateMachine Macro
+
+The `@ComposableStateMachine` macro enables clean, flat composition of child state machines without nested action cases. It generates `NestedStateMachine` reducers that automatically forward parent `Input`/`IOResult` cases to children while preserving effect propagation.
+
+**Key Benefits**:
+- Flat `Input` enums - no `.counter(.input(.incrementTapped))` nesting
+- Automatic effect propagation from child to parent
+- Type-safe forwarding with `@Forward` markers
+- Clean view code: `store.send(.input(.counterIncrement))`
+
+**Basic Usage**:
+
+```swift
+@ComposableStateMachine
+@ComposableEffectRunner(isBodyComposable: true)
+struct ParentFeature: StateMachine {
+    @ObservableState
+    struct State: Equatable {
+        var parentData: String?
+        @NestedState var counter = CounterFeature.State()
+        @NestedState var presets = PresetsFeature.State()
+    }
+
+    enum Input: Sendable {
+        case parentButtonTapped
+
+        @Forward(CounterFeature.Input.incrementTapped)
+        case counterIncrement
+
+        @Forward(CounterFeature.Input.decrementTapped)
+        case counterDecrement
+
+        @Forward(PresetsFeature.Input.loadButtonTapped)
+        case presetsLoad
+
+        // Associated values are automatically forwarded
+        @Forward(PresetsFeature.Input.saveButtonTapped)
+        case presetsSave(count: Int, fact: String)
+    }
+
+    enum IOEffect: Sendable {
+        case fetchData
+    }
+
+    enum IOResult: Sendable {
+        case dataResult(TaskResult<String>)
+
+        // Whole enum forwarding - receives all child IOResults
+        @Forward(PresetsFeature.IOResult.self)
+        case presetsResult(PresetsFeature.IOResult)
+    }
+
+    typealias Action = StateMachineEvent<Input, IOResult>
+
+    static func reduceInput(_ state: State, _ input: Input) -> Transition {
+        switch input {
+        case .parentButtonTapped:
+            run(.fetchData)
+        case .counterIncrement, .counterDecrement:
+            identity  // Automatically forwarded to CounterFeature
+        case .presetsLoad, .presetsSave:
+            identity  // Automatically forwarded to PresetsFeature
+        }
+    }
+
+    static func reduceIOResult(_ state: State, _ ioResult: IOResult) -> Transition {
+        switch ioResult {
+        case .dataResult(.success(let data)):
+            nextState(withVar(state, \.parentData, data))
+        case .dataResult(.failure):
+            identity
+        case .presetsResult:
+            identity  // Automatically forwarded to PresetsFeature
+        }
+    }
+}
+
+extension ParentFeature: ParentFeature.EffectRunner {
+    func runFetchData() -> IOResultStream {
+        .single { .dataResult(.success("data")) }
+    }
+}
+```
+
+**View Usage** - Clean, flat API:
+
+```swift
+struct ParentView: View {
+    let store: StoreOf<ParentFeature>
+
+    var body: some View {
+        Form {
+            // No nested action cases!
+            Button("Increment") { store.send(.input(.counterIncrement)) }
+            Button("Decrement") { store.send(.input(.counterDecrement)) }
+            Button("Load Presets") { store.send(.input(.presetsLoad)) }
+            Button("Save") {
+                store.send(.input(.presetsSave(count: store.counter.count, fact: "test")))
+            }
+        }
+    }
+}
+```
+
+### Markers
+
+**@NestedState** - Marks State properties containing child feature state:
+
+```swift
+struct State {
+    @NestedState var counter: CounterFeature.State
+    @NestedState var presets: PresetsFeature.State
+}
+```
+
+Type inference works with initializers:
+```swift
+@NestedState var counter = CounterFeature.State()  // ✅ Inferred
+@NestedState var counter: CounterFeature.State    // ✅ Explicit
+```
+
+**@Forward** - Marks Input/IOResult cases that forward to children:
+
+```swift
+enum Input {
+    // No associated values
+    @Forward(CounterFeature.Input.incrementTapped)
+    case counterIncrement
+
+    // With associated values - labels are preserved
+    @Forward(PresetsFeature.Input.saveButtonTapped)
+    case presetsSave(count: Int, fact: String)
+}
+
+enum IOResult {
+    // Whole enum forwarding - receives all child IOResults
+    @Forward(PresetsFeature.IOResult.self)
+    case presetsResult(PresetsFeature.IOResult)
+}
+```
+
+### Generated Code
+
+The macro generates:
+1. **nestedBody** - `NestedStateMachine` reducers for each child feature
+2. **Effect mapping** - Child effects are automatically mapped to parent IOResults
+
+```swift
+// Generated by @ComposableStateMachine
+@ReducerBuilder<State, Action>
+var nestedBody: some Reducer<State, Action> {
+    NestedStateMachine<State, Action, CounterFeature>(
+        state: \.counter,
+        toChildAction: { (action: Action) -> CounterFeature.Action? in
+            guard case .input(let input) = action else { return nil }
+            switch input {
+            case .counterIncrement: return .input(.incrementTapped)
+            case .counterDecrement: return .input(.decrementTapped)
+            default: return nil
+            }
+        },
+        fromChildAction: { @Sendable (childAction: CounterFeature.Action) -> Action? in
+            nil  // CounterFeature has no IOResults
+        },
+        child: { CounterFeature() }
+    )
+
+    NestedStateMachine<State, Action, PresetsFeature>(
+        state: \.presets,
+        toChildAction: { (action: Action) -> PresetsFeature.Action? in
+            switch action {
+            case .input(let input):
+                switch input {
+                case .presetsLoad: return .input(.loadButtonTapped)
+                case .presetsSave(let count, let fact):
+                    return .input(.saveButtonTapped(count: count, fact: fact))
+                default: return nil
+                }
+            case .ioResult(let ioResult):
+                switch ioResult {
+                case .presetsResult(let childResult): return .ioResult(childResult)
+                default: return nil
+                }
+            }
+        },
+        fromChildAction: { @Sendable (childAction: PresetsFeature.Action) -> Action? in
+            switch childAction {
+            case .ioResult(let result): return .ioResult(.presetsResult(result))
+            default: return nil
+            }
+        },
+        child: { PresetsFeature() }
+    )
+}
+```
+
+### NestedStateMachine Reducer
+
+`NestedStateMachine` is the runtime component that enables composition without TCA's `Scope` + CasePaths pattern:
+
+```swift
+public struct NestedStateMachine<ParentState, ParentAction, Child: Reducer>: Reducer {
+    private let statePath: WritableKeyPath<ParentState, Child.State>
+    private let toChildAction: (ParentAction) -> Child.Action?
+    private let fromChildAction: @Sendable (Child.Action) -> ParentAction?
+    private let child: () -> Child
+
+    public func reduce(into state: inout ParentState, action: ParentAction) -> Effect<ParentAction> {
+        guard let childAction = toChildAction(action) else {
+            return .none
+        }
+        // Run child reducer and map effects back to parent
+        let childEffect = child().reduce(into: &state[keyPath: statePath], action: childAction)
+        return childEffect.map { fromChildAction($0)! }
+    }
+}
+```
+
+**Key Properties**:
+- **Bidirectional mapping**: `toChildAction` forwards parent actions to child, `fromChildAction` maps child effects back
+- **Effect propagation**: Child effects (IOResults) are automatically propagated to parent
+- **No case paths needed**: Uses plain switch statements instead of TCA's reflection-based routing
+
+### Macro Orthogonality
+
+`@ComposableStateMachine` and `@ComposableEffectRunner` are independent:
+
+| Macro | Purpose | Can Use Alone |
+|-------|---------|---------------|
+| `@ComposableStateMachine` | State machine composition (nesting children) | ✅ Yes |
+| `@ComposableEffectRunner` | Effect composition (`.merge`, `.concat`) | ✅ Yes |
+
+**Use both** when you need:
+- Nested child features AND
+- Effect composition (`.merge/.concat`)
+
+```swift
+@ComposableStateMachine      // Generates nestedBody
+@ComposableEffectRunner(isBodyComposable: true)  // Generates body that uses nestedBody
+struct Feature: StateMachine {
+    // ... nested children with @NestedState
+    // ... effects with .merge/.concat
+}
+```
+
+**Use only @ComposableStateMachine** when:
+- You have nested children
+- No effect composition needed
+
+```swift
+@ComposableStateMachine
+struct Feature: StateMachine {
+    typealias IOEffect = Never  // No parent effects
+    // ... nested children forward to parent
+}
+```
 
 ## Key Design Principles
 
