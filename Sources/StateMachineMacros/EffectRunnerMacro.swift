@@ -31,29 +31,11 @@ public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
 }
 
 private struct EffectRunnerOptions {
-    var isBodyComposable: Bool
+    // Options are now auto-detected from other macros
 
     static func parse(from attribute: AttributeSyntax) throws -> Self {
-        guard let arguments = attribute.arguments?.as(LabeledExprListSyntax.self) else {
-            return .init(isBodyComposable: false)
-        }
-
-        var isBodyComposable: Bool = false
-        for element in arguments {
-            guard let label = element.label?.text else {
-                throw MacroError.message(#"Attribute requires a KeyPath argument, e.g., (@ForwardInput(\.child))"#)
-            }
-            switch label {
-            case "isBodyComposable":
-                guard let boolExpr = element.expression.as(BooleanLiteralExprSyntax.self) else {
-                    throw MacroError.message("@ComposableEffectRunner(isBodyComposable:) must be a boolean literal")
-                }
-                isBodyComposable = (boolExpr.literal.text == "true")
-            default:
-                throw MacroError.message("Unknown @ComposableEffectRunner argument: \(label)")
-            }
-        }
-        return .init(isBodyComposable: isBodyComposable)
+        // No longer has parameters - options are auto-detected
+        return .init()
     }
 }
 
@@ -89,7 +71,8 @@ private struct EffectRunnerAnalyzer {
     let options: EffectRunnerOptions
     let forwardInputMappers: [ForwardMapper]
     let forwardIOResultMappers: [ForwardMapper]
-    
+    let hasComposableStateMachine: Bool
+
     static func analyze(declaration: some DeclGroupSyntax, options: EffectRunnerOptions) throws -> Self {
         let parentName: String
         let parentDecl: DeclGroupSyntax
@@ -102,7 +85,10 @@ private struct EffectRunnerAnalyzer {
         } else {
             throw MacroError.message("@ComposableEffectRunner can only be attached to a struct or actor")
         }
-        
+
+        // Auto-detect @ComposableStateMachine
+        let hasComposableStateMachine = declaration.hasAttribute(named: "ComposableStateMachine")
+
         guard let ioEffectEnum = declaration.memberBlock.members
             .compactMap({ $0.decl.as(EnumDeclSyntax.self) })
             .first(where: { $0.name.text == "IOEffect" }) else {
@@ -115,7 +101,7 @@ private struct EffectRunnerAnalyzer {
 
         var inputMappers: [ForwardMapper] = []
         var ioResultMappers: [ForwardMapper] = []
-        
+
         for member in parentDecl.memberBlock.members {
             if let funcDecl = member.decl.as(FunctionDeclSyntax.self) {
                 if let attr = (funcDecl as DeclSyntaxProtocol).attribute(named: "ForwardInput") {
@@ -128,14 +114,15 @@ private struct EffectRunnerAnalyzer {
                 }
             }
         }
-        
+
         return .init(
             parentName: parentName,
             ioEffectCases: cases,
             parentDecl: parentDecl,
             options: options,
             forwardInputMappers: inputMappers,
-            forwardIOResultMappers: ioResultMappers
+            forwardIOResultMappers: ioResultMappers,
+            hasComposableStateMachine: hasComposableStateMachine
         )
     }
 
@@ -213,7 +200,8 @@ private struct EffectRunnerAnalyzer {
 
 
         let body: DeclSyntax
-        if options.isBodyComposable {
+        // Auto-detect @ComposableStateMachine to include nestedBody
+        if hasComposableStateMachine {
             body = """
                 \(raw: access)var body: some Reducer<State, Action> {
                     nestedBody
@@ -236,7 +224,7 @@ private struct EffectRunnerAnalyzer {
                         case nil:
                             forwardedEffects = .none
                         }
-                        
+
                         return .merge(forwardedEffects, parentEffect)
                     }
                 }
@@ -263,7 +251,7 @@ private struct EffectRunnerAnalyzer {
                         case nil:
                             forwardedEffects = .none
                         }
-                        
+
                         return .merge(forwardedEffects, parentEffect)
                     }
                 }
@@ -394,7 +382,7 @@ private extension DeclSyntaxProtocol {
             return attribute.attributeName.trimmedDescription == name
         }
     }
-    
+
     func attribute(named name: String) -> AttributeSyntax? {
         guard let attributes = self.asProtocol(WithAttributesSyntax.self)?.attributes else { return nil }
         for element in attributes {
@@ -403,5 +391,19 @@ private extension DeclSyntaxProtocol {
             }
         }
         return nil
+    }
+}
+
+private extension DeclGroupSyntax {
+    func hasAttribute(named name: String) -> Bool {
+        for attr in attributes {
+            if case let .attribute(attribute) = attr {
+                let attrName = attribute.attributeName.trimmedDescription
+                if attrName == name {
+                    return true
+                }
+            }
+        }
+        return false
     }
 }

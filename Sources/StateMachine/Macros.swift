@@ -1,6 +1,33 @@
 // imports removed
 
-// MARK: - ComposableEffect
+// MARK: - StateMachine
+
+/// Generates the Action typealias for StateMachine types.
+///
+/// This macro generates:
+/// ```swift
+/// typealias Action = StateMachineEvent<Input, IOResult>
+/// ```
+///
+/// Example:
+/// ```swift
+/// @StateMachine
+/// struct MyFeature: StateMachine {
+///     struct State { ... }
+///     enum Input { ... }
+///     enum IOResult { ... }
+///     // No need for: typealias Action = StateMachineEvent<Input, IOResult>
+/// }
+/// ```
+@attached(member, names: named(Action))
+public macro StateMachine() = #externalMacro(
+    module: "StateMachineMacros",
+    type: "StateMachineMacro"
+)
+
+// MARK: - ComposableEffect (internal use)
+// Note: @ComposableEffect is auto-applied by @ComposableEffectRunner.
+// It remains available for internal use but is not typically needed standalone.
 
 @attached(member, names: arbitrary)
 @attached(extension, conformances: ComposableEffectConvertible)
@@ -11,9 +38,12 @@ public macro ComposableEffect() = #externalMacro(
 
 // MARK: - ComposableEffectRunner
 
+/// Generates effect running infrastructure for composable effects.
+///
+/// This macro auto-detects `@ComposableStateMachine` and includes `nestedBody` automatically.
 @attached(member, names: arbitrary)
 @attached(memberAttribute)
-public macro ComposableEffectRunner(isBodyComposable: Bool = false) = #externalMacro(
+public macro ComposableEffectRunner() = #externalMacro(
     module: "StateMachineMacros",
     type: "EffectRunnerMacro"
 )

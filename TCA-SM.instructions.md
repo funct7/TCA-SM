@@ -97,7 +97,28 @@ extension StateMachine {
 }
 ```
 
-### ComposableEffect Macro
+## Macros
+
+### @StateMachine Macro
+
+The `@StateMachine` macro generates the Action typealias automatically:
+
+```swift
+@StateMachine
+struct MyFeature: StateMachine {
+    struct State { ... }
+    enum Input { ... }
+    enum IOResult { ... }
+    // No need for: typealias Action = StateMachineEvent<Input, IOResult>
+}
+```
+
+**Generated code**:
+```swift
+typealias Action = StateMachineEvent<Input, IOResult>
+```
+
+### ComposableEffect Macro (Internal)
 
 Add the `@ComposableEffect` attribute to any effect enum to synthesize scoped helpers that lift enum cases into `ComposableEffect` values. This keeps reducer code terse even when mixing nested combinators:
 
@@ -126,31 +147,31 @@ The macro-generated functions honor the enum's access control, so `public enum` 
 
 ### ComposableEffectRunner Macro
 
-`@ComposableEffectRunner` belongs on the feature type (struct/actor) and does more than `@ComposableEffect` alone:
+`@ComposableEffectRunner` belongs on the feature type (struct/actor) and provides:
 
-- It auto-applies `@ComposableEffect` to the nested `IOEffect` enum if you didn't add it yourself.
-- It synthesizes composition-aware reducer plumbing (`reduce`, `applyIOEffect`, `apply`, `body`) so your `Transition` can keep using plain `IOEffect?` while still emitting composed effects like `.merge`/`.concat` in reducer code.
-- It generates a `runIOEffect(_:) -> IOResultStream` dispatcher plus a private `EffectRunner` protocol with per-case methods.
+- Auto-applies `@ComposableEffect` to the nested `IOEffect` enum if you didn't add it yourself.
+- Synthesizes composition-aware reducer plumbing (`reduce`, `applyIOEffect`, `apply`, `body`) so your `Transition` can keep using plain `IOEffect?` while still emitting composed effects like `.merge`/`.concat` in reducer code.
+- Generates a `runIOEffect(_:) -> IOResultStream` dispatcher plus a private `EffectRunner` protocol with per-case methods.
+- **Auto-detects `@ComposableStateMachine`**: When both macros are present, it automatically includes `nestedBody` in the generated `body`.
 
-If you only use `@ComposableEffect` on `IOEffect`, you will still have to hand-roll composition extraction and reducer wiring. To get the composable reducer behavior, apply `@ComposableEffectRunner` to your feature and conform to the synthesized `{Feature}.EffectRunner` by implementing one method per `IOEffect` case. Move the logic you previously wrote in `runIOEffect` into those per-case methods; the macro-routed `runIOEffect(_:)` will call them for you.
+To get the composable reducer behavior, apply `@ComposableEffectRunner` to your feature and conform to the synthesized `{Feature}.EffectRunner` by implementing one method per `IOEffect` case. Move the logic you previously wrote in `runIOEffect` into those per-case methods; the macro-routed `runIOEffect(_:)` will call them for you.
 
 **Minimal example**
 
 ```swift
+@StateMachine
 @ComposableEffectRunner
 struct Feature: StateMachine {
     struct State: Equatable { var count = 0 }
     enum Input { case tap }
 
-    // You may omit this annotation; the runner macro will add it if missing.
-    @ComposableEffect
+    // @ComposableEffect is auto-applied by @ComposableEffectRunner
     enum IOEffect {
         case fetch(Int)
         case log(Int)
     }
 
     typealias IOResult = TaskResult<String>
-    typealias Action = StateMachineEvent<Input, IOResult>
 
     static func reduceInput(_ state: State, _ input: Input) -> Transition {
         // Composition stays ergonomic in reducers.
@@ -265,8 +286,9 @@ The `@ComposableStateMachine` macro enables clean, flat composition of child sta
 **Basic Usage**:
 
 ```swift
+@StateMachine
 @ComposableStateMachine
-@ComposableEffectRunner(isBodyComposable: true)
+@ComposableEffectRunner
 struct ParentFeature: StateMachine {
     @ObservableState
     struct State: Equatable {
@@ -303,8 +325,6 @@ struct ParentFeature: StateMachine {
         @Forward(PresetsFeature.IOResult.self)
         case presetsResult(PresetsFeature.IOResult)
     }
-
-    typealias Action = StateMachineEvent<Input, IOResult>
 
     static func reduceInput(_ state: State, _ input: Input) -> Transition {
         switch input {
@@ -477,31 +497,34 @@ public struct NestedStateMachine<ParentState, ParentAction, Child: Reducer>: Red
 
 ### Macro Orthogonality
 
-`@ComposableStateMachine` and `@ComposableEffectRunner` are independent:
+The macros are independent and composable:
 
 | Macro | Purpose | Can Use Alone |
 |-------|---------|---------------|
+| `@StateMachine` | Generates Action typealias | ✅ Yes |
 | `@ComposableStateMachine` | State machine composition (nesting children) | ✅ Yes |
 | `@ComposableEffectRunner` | Effect composition (`.merge`, `.concat`) | ✅ Yes |
 
-**Use both** when you need:
+**Use all three** when you need:
 - Nested child features AND
 - Effect composition (`.merge/.concat`)
 
 ```swift
+@StateMachine                // Generates Action typealias
 @ComposableStateMachine      // Generates nestedBody
-@ComposableEffectRunner(isBodyComposable: true)  // Generates body that uses nestedBody
+@ComposableEffectRunner      // Generates body (auto-includes nestedBody)
 struct Feature: StateMachine {
     // ... nested children with @NestedState
     // ... effects with .merge/.concat
 }
 ```
 
-**Use only @ComposableStateMachine** when:
+**Use only @StateMachine + @ComposableStateMachine** when:
 - You have nested children
 - No effect composition needed
 
 ```swift
+@StateMachine
 @ComposableStateMachine
 struct Feature: StateMachine {
     typealias IOEffect = Never  // No parent effects
