@@ -48,21 +48,6 @@ public macro ComposableEffectRunner() = #externalMacro(
     type: "EffectRunnerMacro"
 )
 
-// MARK: - ForwardInput
-
-@attached(peer)
-public macro ForwardInput<Root, Value>(_ child: KeyPath<Root, Value>) = #externalMacro(module: "StateMachineMacros", type: "ForwardInputMacro")
-
-// MARK: - ForwardIOResult
-
-@attached(peer)
-public macro ForwardIOResult<Root, Value>(_ child: KeyPath<Root, Value>) = #externalMacro(module: "StateMachineMacros", type: "ForwardIOResultMacro")
-
-// MARK: - NestedBody
-
-@attached(peer, names: prefixed(_))
-public macro NestedBody() = #externalMacro(module: "StateMachineMacros", type: "NestedBodyMacro")
-
 // MARK: - ComposableStateMachine
 
 /// Enables state machine composition by generating `body` with `NestedStateMachine` reducers.

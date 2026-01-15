@@ -39,38 +39,11 @@ private struct EffectRunnerOptions {
     }
 }
 
-private struct ForwardMapper {
-    enum MapperType {
-        case input
-        case ioResult
-    }
-    let type: MapperType
-    let functionName: String
-    let childKeyPath: String
-    let childActionCase: String
-
-    func makeEffectSend(parentActionVariable: String) -> String {
-        let actionVar = "\(childKeyPath)Action"
-        // e.g. (.input(child1Action)) or (.ioResult(child1Action))
-        let childPayload = type == .input ? "(.input(\(actionVar)))" : "(.ioResult(\(actionVar)))"
-        
-        // We properly interpolate the values into the string.
-        // Note: indentation here is for the generated code's readability, but primarily must be valid Swift.
-        return """
-        if let \(actionVar) = Self.\(functionName)(\(parentActionVariable)) {
-            effects.append(.send(.\(childActionCase)\(childPayload)))
-        }
-        """
-    }
-}
-
 private struct EffectRunnerAnalyzer {
     let parentName: String
     let ioEffectCases: [IOEffectCase]
     let parentDecl: DeclGroupSyntax
     let options: EffectRunnerOptions
-    let forwardInputMappers: [ForwardMapper]
-    let forwardIOResultMappers: [ForwardMapper]
     let hasComposableStateMachine: Bool
 
     static func analyze(declaration: some DeclGroupSyntax, options: EffectRunnerOptions) throws -> Self {
@@ -99,29 +72,11 @@ private struct EffectRunnerAnalyzer {
         }
         let cases = try ioEffectEnum.collectLeafCases()
 
-        var inputMappers: [ForwardMapper] = []
-        var ioResultMappers: [ForwardMapper] = []
-
-        for member in parentDecl.memberBlock.members {
-            if let funcDecl = member.decl.as(FunctionDeclSyntax.self) {
-                if let attr = (funcDecl as DeclSyntaxProtocol).attribute(named: "ForwardInput") {
-                    let keyPath = try parseKeyPathArgument(from: attr)
-                    inputMappers.append(.init(type: .input, functionName: funcDecl.name.text, childKeyPath: keyPath, childActionCase: keyPath))
-                }
-                if let attr = (funcDecl as DeclSyntaxProtocol).attribute(named: "ForwardIOResult") {
-                    let keyPath = try parseKeyPathArgument(from: attr)
-                    ioResultMappers.append(.init(type: .ioResult, functionName: funcDecl.name.text, childKeyPath: keyPath, childActionCase: keyPath))
-                }
-            }
-        }
-
         return .init(
             parentName: parentName,
             ioEffectCases: cases,
             parentDecl: parentDecl,
             options: options,
-            forwardInputMappers: inputMappers,
-            forwardIOResultMappers: ioResultMappers,
             hasComposableStateMachine: hasComposableStateMachine
         )
     }
@@ -189,15 +144,6 @@ private struct EffectRunnerAnalyzer {
             return ioEffect.map { $0.asComposableEffect().extract(applyIOEffect(_:)) } ?? .none
         }
         """
-        
-        let forwardInputStatements = forwardInputMappers
-            .map { $0.makeEffectSend(parentActionVariable: "input") }
-            .joined(separator: "\n")
-        
-        let forwardIOResultStatements = forwardIOResultMappers
-            .map { $0.makeEffectSend(parentActionVariable: "ioResult") }
-            .joined(separator: "\n")
-
 
         let body: DeclSyntax
         // Auto-detect @ComposableStateMachine to include nestedBody
@@ -206,26 +152,8 @@ private struct EffectRunnerAnalyzer {
                 \(raw: access)var body: some Reducer<State, Action> {
                     nestedBody
                     Reduce { state, action in
-                        // Apply parent's own reduction logic
-                        let parentTransition = Self.reduce(state, action)
-                        let parentEffect = apply(parentTransition, to: &state)
-
-                        // Handle forwarding if mappers are present
-                        var forwardedEffects: Effect<Action>
-                        switch Action.map(action) {
-                        case .input(let input)?:
-                            var effects: [Effect<Action>] = []
-                            \(raw: forwardInputStatements)
-                            forwardedEffects = .merge(effects)
-                        case .ioResult(let ioResult)?:
-                            var effects: [Effect<Action>] = []
-                            \(raw: forwardIOResultStatements)
-                            forwardedEffects = .merge(effects)
-                        case nil:
-                            forwardedEffects = .none
-                        }
-
-                        return .merge(forwardedEffects, parentEffect)
+                        let transition = Self.reduce(state, action)
+                        return apply(transition, to: &state)
                     }
                 }
                 """
@@ -233,26 +161,8 @@ private struct EffectRunnerAnalyzer {
              body = """
                 \(raw: access)var body: some Reducer<State, Action> {
                     Reduce { state, action in
-                        // Apply parent's own reduction logic
-                        let parentTransition = Self.reduce(state, action)
-                        let parentEffect = apply(parentTransition, to: &state)
-
-                        // Handle forwarding if mappers are present
-                        var forwardedEffects: Effect<Action>
-                        switch Action.map(action) {
-                        case .input(let input)?:
-                            var effects: [Effect<Action>] = []
-                            \(raw: forwardInputStatements)
-                            forwardedEffects = .merge(effects)
-                        case .ioResult(let ioResult)?:
-                            var effects: [Effect<Action>] = []
-                            \(raw: forwardIOResultStatements)
-                            forwardedEffects = .merge(effects)
-                        case nil:
-                            forwardedEffects = .none
-                        }
-
-                        return .merge(forwardedEffects, parentEffect)
+                        let transition = Self.reduce(state, action)
+                        return apply(transition, to: &state)
                     }
                 }
                 """
@@ -275,27 +185,6 @@ private extension EffectRunnerAnalyzer {
             }
         }
         return nil
-    }
-    
-    static func parseKeyPathArgument(from attribute: AttributeSyntax) throws -> String {
-        guard let argument = attribute.arguments?.as(LabeledExprListSyntax.self)?.first?.expression else {
-            throw MacroError.message(#"Attribute requires a KeyPath argument, e.g., (@ForwardInput(\.child))"#)
-        }
-        guard let keyPathExpr = argument.as(KeyPathExprSyntax.self) else {
-            throw MacroError.message("Argument must be a KeyPath literal")
-        }
-        
-        guard let component = keyPathExpr.components.last else {
-            throw MacroError.message("KeyPath must have at least one component")
-        }
-        
-        if let propertyComponent = component.as(KeyPathPropertyComponentSyntax.self) {
-            return propertyComponent.declName.baseName.text
-        }
-        
-        // Fallback: Just return the string representation of the component (e.g. "counter" or ".counter")
-        let raw = component.trimmedDescription
-        return raw.trimmingCharacters(in: CharacterSet(charactersIn: "."))
     }
 }
 

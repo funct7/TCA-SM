@@ -8,9 +8,7 @@ struct StateMachinePlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         ComposableEffectMembersMacro.self,
         EffectRunnerMacro.self,
-        ForwardInputMacro.self,
-        ForwardIOResultMacro.self,
-        // New macros for state machine composition
+        // State machine composition macros
         ComposableStateMachineMacro.self,
         NestedStateMacro.self,
         ForwardMacro.self,
