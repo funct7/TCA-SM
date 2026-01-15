@@ -3,17 +3,17 @@ import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 import Foundation
 
-public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
+public struct EffectCompositionMacro: MemberMacro, MemberAttributeMacro {
     public static func expansion(
         of attribute: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
-        let options = try EffectRunnerOptions.parse(from: attribute)
-        let info = try EffectRunnerAnalyzer.analyze(declaration: declaration, options: options)
+        let options = try EffectCompositionOptions.parse(from: attribute)
+        let info = try EffectCompositionAnalyzer.analyze(declaration: declaration, options: options)
         return [info.makeEffectHandlerProtocol()] + info.makeComposableHelpers() + [info.makeRunIOEffect()]
     }
-    
+
     public static func expansion(
         of attribute: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,
@@ -30,7 +30,7 @@ public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
     }
 }
 
-private struct EffectRunnerOptions {
+private struct EffectCompositionOptions {
     // Options are now auto-detected from other macros
 
     static func parse(from attribute: AttributeSyntax) throws -> Self {
@@ -39,14 +39,14 @@ private struct EffectRunnerOptions {
     }
 }
 
-private struct EffectRunnerAnalyzer {
+private struct EffectCompositionAnalyzer {
     let parentName: String
     let ioEffectCases: [IOEffectCase]
     let parentDecl: DeclGroupSyntax
-    let options: EffectRunnerOptions
+    let options: EffectCompositionOptions
     let hasComposableStateMachine: Bool
 
-    static func analyze(declaration: some DeclGroupSyntax, options: EffectRunnerOptions) throws -> Self {
+    static func analyze(declaration: some DeclGroupSyntax, options: EffectCompositionOptions) throws -> Self {
         let parentName: String
         let parentDecl: DeclGroupSyntax
         if let structDecl = declaration.as(StructDeclSyntax.self) {
@@ -56,7 +56,7 @@ private struct EffectRunnerAnalyzer {
             parentName = actorDecl.name.text
             parentDecl = actorDecl
         } else {
-            throw MacroError.message("@ComposableEffectRunner can only be attached to a struct or actor")
+            throw MacroError.message("@EffectComposition can only be attached to a struct or actor")
         }
 
         // Auto-detect @ComposableStateMachine
@@ -65,10 +65,10 @@ private struct EffectRunnerAnalyzer {
         guard let ioEffectEnum = declaration.memberBlock.members
             .compactMap({ $0.decl.as(EnumDeclSyntax.self) })
             .first(where: { $0.name.text == "IOEffect" }) else {
-            throw MacroError.message("@ComposableEffectRunner requires a nested enum named IOEffect")
+            throw MacroError.message("@EffectComposition requires a nested enum named IOEffect")
         }
         if ioEffectEnum.containsCase(named: "merge") || ioEffectEnum.containsCase(named: "concat") {
-            throw MacroError.message("@ComposableEffectRunner should not be used when IOEffect already declares merge/concat")
+            throw MacroError.message("@EffectComposition should not be used when IOEffect already declares merge/concat")
         }
         let cases = try ioEffectEnum.collectLeafCases()
 
@@ -172,7 +172,7 @@ private struct EffectRunnerAnalyzer {
     }
 }
 
-private extension EffectRunnerAnalyzer {
+private extension EffectCompositionAnalyzer {
     var accessPrefix: String {
         parentAccessModifier.map { $0 + " " } ?? ""
     }

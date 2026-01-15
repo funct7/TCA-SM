@@ -27,7 +27,7 @@ private struct StateMachineAnalyzer {
     let nestedStates: [NestedStateInfo]
     let inputForwards: [ForwardInfo]
     let ioResultForwards: [ForwardInfo]
-    let hasEffectRunner: Bool
+    let hasEffectComposition: Bool
 
     static func analyze(declaration: some DeclGroupSyntax) throws -> Self {
         let parentName: String
@@ -43,8 +43,8 @@ private struct StateMachineAnalyzer {
             throw MacroError.message("@ComposableStateMachine can only be attached to a struct or actor")
         }
 
-        // Check if @ComposableEffectRunner is also present
-        let hasEffectRunner = declaration.hasAttribute(named: "ComposableEffectRunner")
+        // Check if @EffectComposition is also present
+        let hasEffectComposition = declaration.hasAttribute(named: "EffectComposition")
 
         // Find State struct and collect @NestedState properties
         let stateStruct = declaration.memberBlock.members
@@ -112,7 +112,7 @@ private struct StateMachineAnalyzer {
             nestedStates: nestedStates,
             inputForwards: inputForwards,
             ioResultForwards: ioResultForwards,
-            hasEffectRunner: hasEffectRunner
+            hasEffectComposition: hasEffectComposition
         )
     }
 
@@ -236,12 +236,12 @@ private struct StateMachineAnalyzer {
     }
 
     func makeGeneratedMembers() -> [DeclSyntax] {
-        // If @ComposableEffectRunner is present, it generates `body`, so we should not generate it.
+        // If @EffectComposition is present, it generates `body`, so we should not generate it.
         // Instead, we need a different approach - perhaps a computed property that returns the nested reducers.
-        // For now, let's generate `body` only if @ComposableEffectRunner is not present.
+        // For now, let's generate `body` only if @EffectComposition is not present.
 
-        if hasEffectRunner {
-            // When both macros are present, @ComposableEffectRunner generates body with nestedBody.
+        if hasEffectComposition {
+            // When both macros are present, @EffectComposition generates body with nestedBody.
             // We generate nestedBody here.
             return makeNestedBodyMembers()
         } else {
@@ -298,7 +298,7 @@ private struct StateMachineAnalyzer {
         }
         """
 
-        // Also generate helper methods if not using @ComposableEffectRunner
+        // Also generate helper methods if not using @EffectComposition
         let reduce: DeclSyntax = """
         \(raw: access)static func reduce(_ state: State, _ action: Action) -> Transition {
             return switch Action.map(action) {

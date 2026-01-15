@@ -36,16 +36,16 @@ public macro ComposableEffect() = #externalMacro(
     type: "ComposableEffectMembersMacro"
 )
 
-// MARK: - ComposableEffectRunner
+// MARK: - EffectComposition
 
-/// Generates effect running infrastructure for composable effects.
+/// Enables effect composition with `.merge` and `.concat` combinators.
 ///
 /// This macro auto-detects `@ComposableStateMachine` and includes `nestedBody` automatically.
 @attached(member, names: arbitrary)
 @attached(memberAttribute)
-public macro ComposableEffectRunner() = #externalMacro(
+public macro EffectComposition() = #externalMacro(
     module: "StateMachineMacros",
-    type: "EffectRunnerMacro"
+    type: "EffectCompositionMacro"
 )
 
 // MARK: - ComposableStateMachine
