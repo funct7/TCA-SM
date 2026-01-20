@@ -1,17 +1,19 @@
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+import Foundation
 
-public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
+public struct EffectCompositionMacro: MemberMacro, MemberAttributeMacro {
     public static func expansion(
         of attribute: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
-        let info = try EffectRunnerAnalyzer.analyze(declaration: declaration)
+        let options = try EffectCompositionOptions.parse(from: attribute)
+        let info = try EffectCompositionAnalyzer.analyze(declaration: declaration, options: options)
         return [info.makeEffectHandlerProtocol()] + info.makeComposableHelpers() + [info.makeRunIOEffect()]
     }
-    
+
     public static func expansion(
         of attribute: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,
@@ -21,19 +23,30 @@ public struct EffectRunnerMacro: MemberMacro, MemberAttributeMacro {
         guard let enumDecl = member.as(EnumDeclSyntax.self), enumDecl.name.text == "IOEffect" else {
             return []
         }
-        if enumDecl.hasAttribute(named: "ComposableEffect") {
+        if (enumDecl as DeclSyntaxProtocol).hasAttribute(named: "ComposableEffect") {
             return []
         }
         return ["@ComposableEffect"]
     }
 }
 
-private struct EffectRunnerAnalyzer {
+private struct EffectCompositionOptions {
+    // Options are now auto-detected from other macros
+
+    static func parse(from attribute: AttributeSyntax) throws -> Self {
+        // No longer has parameters - options are auto-detected
+        return .init()
+    }
+}
+
+private struct EffectCompositionAnalyzer {
     let parentName: String
     let ioEffectCases: [IOEffectCase]
     let parentDecl: DeclGroupSyntax
-    
-    static func analyze(declaration: some DeclGroupSyntax) throws -> Self {
+    let options: EffectCompositionOptions
+    let hasComposableStateMachine: Bool
+
+    static func analyze(declaration: some DeclGroupSyntax, options: EffectCompositionOptions) throws -> Self {
         let parentName: String
         let parentDecl: DeclGroupSyntax
         if let structDecl = declaration.as(StructDeclSyntax.self) {
@@ -43,20 +56,31 @@ private struct EffectRunnerAnalyzer {
             parentName = actorDecl.name.text
             parentDecl = actorDecl
         } else {
-            throw MacroError.message("@ComposableEffectRunner can only be attached to a struct or actor")
+            throw MacroError.message("@EffectComposition can only be attached to a struct or actor")
         }
+
+        // Auto-detect @ComposableStateMachine
+        let hasComposableStateMachine = declaration.hasAttribute(named: "ComposableStateMachine")
+
         guard let ioEffectEnum = declaration.memberBlock.members
             .compactMap({ $0.decl.as(EnumDeclSyntax.self) })
             .first(where: { $0.name.text == "IOEffect" }) else {
-            throw MacroError.message("@ComposableEffectRunner requires a nested enum named IOEffect")
+            throw MacroError.message("@EffectComposition requires a nested enum named IOEffect")
         }
         if ioEffectEnum.containsCase(named: "merge") || ioEffectEnum.containsCase(named: "concat") {
-            throw MacroError.message("@ComposableEffectRunner should not be used when IOEffect already declares merge/concat")
+            throw MacroError.message("@EffectComposition should not be used when IOEffect already declares merge/concat")
         }
         let cases = try ioEffectEnum.collectLeafCases()
-        return .init(parentName: parentName, ioEffectCases: cases, parentDecl: parentDecl)
+
+        return .init(
+            parentName: parentName,
+            ioEffectCases: cases,
+            parentDecl: parentDecl,
+            options: options,
+            hasComposableStateMachine: hasComposableStateMachine
+        )
     }
-    
+
     func makeRunIOEffect() -> DeclSyntax {
         let leafSwitchCases = ioEffectCases
             .map { $0.makeSwitchCase() }
@@ -120,19 +144,35 @@ private struct EffectRunnerAnalyzer {
             return ioEffect.map { $0.asComposableEffect().extract(applyIOEffect(_:)) } ?? .none
         }
         """
-        let body: DeclSyntax = """
-        \(raw: access)var body: some Reducer<State, Action> {
-            Reduce { state, action in
-                let transition = Self.reduce(state, action)
-                return apply(transition, to: &state)
-            }
+
+        let body: DeclSyntax
+        // Auto-detect @ComposableStateMachine to include nestedBody
+        if hasComposableStateMachine {
+            body = """
+                \(raw: access)var body: some Reducer<State, Action> {
+                    nestedBody
+                    Reduce { state, action in
+                        let transition = Self.reduce(state, action)
+                        return apply(transition, to: &state)
+                    }
+                }
+                """
+        } else {
+             body = """
+                \(raw: access)var body: some Reducer<State, Action> {
+                    Reduce { state, action in
+                        let transition = Self.reduce(state, action)
+                        return apply(transition, to: &state)
+                    }
+                }
+                """
         }
-        """
+
         return [reduce, applyIO, apply, body]
     }
 }
 
-private extension EffectRunnerAnalyzer {
+private extension EffectCompositionAnalyzer {
     var accessPrefix: String {
         parentAccessModifier.map { $0 + " " } ?? ""
     }
@@ -179,8 +219,8 @@ private struct IOEffectCase {
         let bindings = parameters.map { "let \($0.internalName)" }.joined(separator: ", ")
         let patternSuffix = bindings.isEmpty ? "" : "(\(bindings))"
         let arguments = parameters.map { $0.callArgument }.joined(separator: ", ")
-        let callSuffix = arguments.isEmpty ? "" : "(\(arguments))"
-        return "case .\(name)\(patternSuffix): \(handlerName)\(callSuffix)"
+        let callSuffix = arguments.isEmpty ? "()" : "(\(arguments))"
+        return "case .\(name)\(patternSuffix): self.\(handlerName)\(callSuffix)"
     }
 }
 
@@ -230,5 +270,29 @@ private extension DeclSyntaxProtocol {
             guard let attribute = attr.as(AttributeSyntax.self) else { return false }
             return attribute.attributeName.trimmedDescription == name
         }
+    }
+
+    func attribute(named name: String) -> AttributeSyntax? {
+        guard let attributes = self.asProtocol(WithAttributesSyntax.self)?.attributes else { return nil }
+        for element in attributes {
+            if case let .attribute(attribute) = element, attribute.attributeName.trimmedDescription == name {
+                return attribute
+            }
+        }
+        return nil
+    }
+}
+
+private extension DeclGroupSyntax {
+    func hasAttribute(named name: String) -> Bool {
+        for attr in attributes {
+            if case let .attribute(attribute) = attr {
+                let attrName = attribute.attributeName.trimmedDescription
+                if attrName == name {
+                    return true
+                }
+            }
+        }
+        return false
     }
 }

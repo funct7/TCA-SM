@@ -7,7 +7,14 @@ import SwiftSyntaxMacros
 struct StateMachinePlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         ComposableEffectMembersMacro.self,
-        EffectRunnerMacro.self
+        EffectCompositionMacro.self,
+        // State machine composition macros
+        ComposableStateMachineMacro.self,
+        NestedStateMacro.self,
+        ForwardMacro.self,
+        NestedFeatureMacro.self,
+        // Core macro for Action typealias
+        StateMachineMacro.self,
     ]
 }
 
