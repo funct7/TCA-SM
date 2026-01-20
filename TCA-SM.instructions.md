@@ -41,10 +41,10 @@ struct MyFeature : StateMachine {
 
     // Instance = can access dependencies for side effects
     func runIOEffect(_ ioEffect: IOEffect) -> EffectSequence {
-        AsyncStream { continuation in
+        AsyncStream { sender in
             Task {
                 _ = await apiService.fetchData()  // ✅ Can access instance properties
-                continuation.finish()
+                sender.finish()
             }
         }
     }
@@ -190,25 +190,25 @@ struct Feature: StateMachine {
 // The macro synthesizes Feature.EffectRunner; implement one method per IOEffect case.
 extension Feature: Feature.EffectRunner {
     func runFetch(_ value: Int) -> IOResultStream {
-        IOResultStream { continuation in
+        IOResultStream { sender in
             let task = Task {
                 do {
                     let (data, _) = try await URLSession.shared
                         .data(from: URL(string: "https://numbersapi.com/\(value)/trivia")!)
-                    continuation.yield(.success(String(decoding: data, as: UTF8.self)))
+                    sender.yield(.success(String(decoding: data, as: UTF8.self)))
                 } catch {
-                    continuation.yield(.failure(error))
+                    sender.yield(.failure(error))
                 }
-                continuation.finish()
+                sender.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            sender.onTermination = { _ in task.cancel() }
         }
     }
 
     func runLog(_ value: Int) -> IOResultStream {
-        IOResultStream { continuation in
-            continuation.yield(.success("log: \(value)"))
-            continuation.finish()
+        IOResultStream { sender in
+            sender.yield(.success("log: \(value)"))
+            sender.finish()
         }
     }
 }
@@ -552,24 +552,24 @@ enum IOResult {
 func runIOEffect(_ effect: IOEffect) -> EffectSequence {
     switch effect {
     case let .authenticate(username, password):
-        return AsyncStream { continuation in
+        return AsyncStream { sender in
             Task {
                 // Pure IO: execute requests and surface outcomes, no branching
                 do {
                     let token = try await api.login(username, password)
-                    continuation.yield(.loginResponse(.success(token)))
+                    sender.yield(.loginResponse(.success(token)))
                 } catch {
-                    continuation.yield(.loginResponse(.failure(.network(error))))
+                    sender.yield(.loginResponse(.failure(.network(error))))
                 }
 
                 do {
                     let profile = try await api.fetchProfile()
-                    continuation.yield(.profileResponse(.success(profile)))
+                    sender.yield(.profileResponse(.success(profile)))
                 } catch {
-                    continuation.yield(.profileResponse(.failure(.network(error))))
+                    sender.yield(.profileResponse(.failure(.network(error))))
                 }
 
-                continuation.finish()
+                sender.finish()
             }
         }
     }
@@ -627,8 +627,8 @@ func runIOEffect(_ effect: IOEffect) -> EffectSequence {
         // if useCache && cache.hasData {  // ❌ Decision in IO
         //     yield .dataFetched(cache.data)
         // }
-        return AsyncStream { continuation in
-            continuation.finish()
+        return AsyncStream { sender in
+            sender.finish()
         }
     }
 }
@@ -737,15 +737,15 @@ static func reduceInput(_ state: State, _ input: Input) -> Transition {
 func runIOEffect(_ effect: IOEffect) -> EffectSequence {
     switch effect {
     case .fetchData:
-        return AsyncStream { continuation in
+        return AsyncStream { sender in
             Task {
                 do {
                     let data = try await api.fetch()
-                    continuation.yield(.dataFetched(data))
+                    sender.yield(.dataFetched(data))
                 } catch {
-                    continuation.yield(.fetchFailed(error))
+                    sender.yield(.fetchFailed(error))
                 }
-                continuation.finish()
+                sender.finish()
             }
         }
     }
@@ -753,9 +753,9 @@ func runIOEffect(_ effect: IOEffect) -> EffectSequence {
 
 // Migrating from single-result to stream:
 // Old: async -> IOResult?
-// New: return AsyncStream<IOResult> { continuation in
-//   if let result = oldReturnValue { continuation.yield(result) }
-//   continuation.finish()
+// New: return AsyncStream<IOResult> { sender in
+//   if let result = oldReturnValue { sender.yield(result) }
+//   sender.finish()
 // }
 ```
 
@@ -785,15 +785,15 @@ static func reduceInput(_ state: State, _ input: Input) -> Transition {
 func runIOEffect(_ effect: IOEffect) -> EffectSequence {
     switch effect {
     case .fetchData:
-        return AsyncStream { continuation in
+        return AsyncStream { sender in
             Task {
                 do {
                     let data = try await api.fetch()
-                    continuation.yield(.dataFetched(data))
+                    sender.yield(.dataFetched(data))
                 } catch {
-                    continuation.yield(.fetchFailed(error))
+                    sender.yield(.fetchFailed(error))
                 }
-                continuation.finish()
+                sender.finish()
             }
         }
     }

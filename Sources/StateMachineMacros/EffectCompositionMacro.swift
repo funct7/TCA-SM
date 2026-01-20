@@ -90,14 +90,14 @@ private struct EffectCompositionAnalyzer {
         \(raw: access)func runIOEffect(_ ioEffect: IOEffect) -> IOResultStream {
             switch ioEffect {
             case .merge:
-                IOResultStream { continuation in
+                IOResultStream { sender in
                     assertionFailure("IOEffect.merge is synthesized for composition and should not reach runIOEffect")
-                    continuation.finish()
+                    sender.finish()
                 }
             case .concat:
-                IOResultStream { continuation in
+                IOResultStream { sender in
                     assertionFailure("IOEffect.concat is synthesized for composition and should not reach runIOEffect")
-                    continuation.finish()
+                    sender.finish()
                 }
             \(raw: leafSwitchCases)
             }
