@@ -26,7 +26,7 @@ public macro StateMachine() = #externalMacro(
 )
 
 // MARK: - ComposableEffect (internal use)
-// Note: @ComposableEffect is auto-applied by @ComposableEffectRunner.
+// Note: @ComposableEffect is auto-applied by @EffectComposition.
 // It remains available for internal use but is not typically needed standalone.
 
 @attached(member, names: arbitrary)
