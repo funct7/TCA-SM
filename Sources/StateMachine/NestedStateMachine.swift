@@ -28,7 +28,12 @@ import Combine
 ///     // ... parent's own reducer
 /// }
 /// ```
-public struct NestedStateMachine<ParentState, ParentAction, Child: Reducer>: Reducer {
+public struct NestedStateMachine<ParentState, ParentAction, Child: StateMachine>: Reducer
+where
+    Child.Action : StateMachineEventConvertible,
+    Child.Action.Input == Child.Input,
+    Child.Action.IOResult == Child.IOResult
+{
     public typealias State = ParentState
     public typealias Action = ParentAction
 
@@ -62,8 +67,11 @@ public struct NestedStateMachine<ParentState, ParentAction, Child: Reducer>: Red
         guard let childAction = toChildAction(action) else {
             return .none
         }
-        // Run child reducer on scoped state and capture the effect
-        let childEffect = child().reduce(into: &state[keyPath: statePath], action: childAction)
+        let child = child()
+        let childEffect = child.apply(
+            Child.reduce(state[keyPath: statePath], childAction),
+            to: &state[keyPath: statePath]
+        )
 
         // Map child effect's actions to parent actions
         // We wrap the child effect and transform its actions

@@ -28,7 +28,7 @@ public extension Store {
             reducer: stateMachine,
             withDependencies: prepareDependencies
         )
-        .scope(state: \.self, action: SM.Action.input(_:))
+        .scope(state: \.self, action: \.input)
     }
     
 }
