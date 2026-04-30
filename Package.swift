@@ -1,22 +1,22 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.1
 import PackageDescription
 import CompilerPluginSupport
 
 let package = Package(
     name: "StateMachine",
     platforms: [
-        .iOS(.v13),
+        .iOS(.v16),
         .macOS(.v13),
-        .tvOS(.v13),
-        .watchOS(.v6),
+        .tvOS(.v16),
+        .watchOS(.v9),
     ],
     products: [
         .library(name: "StateMachine", targets: ["StateMachine"])
     ],
     dependencies: [
         .package(url: "https://github.com/pointfreeco/swift-composable-architecture", exact: "1.25.5"),
-        .package(url: "https://github.com/pointfreeco/swift-case-paths", exact: "1.7.1"),
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "509.0.0"),
+        .package(url: "https://github.com/pointfreeco/swift-case-paths", from: "1.7.1"),
+        .package(url: "https://github.com/swiftlang/swift-syntax", "509.0.0"..<"605.0.0"),
     ],
     targets: [
         .macro(
