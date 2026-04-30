@@ -36,6 +36,7 @@ public extension Store {
 // MARK: - Runtimes
 
 @available(iOS 16, *)
+@MainActor
 public enum Runtimes<SM>
 where SM : StateMachine,
       SM.Action : StateMachineEventConvertible,

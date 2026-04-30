@@ -64,6 +64,7 @@ public struct NestedStateMachine<ParentState, ParentAction, Child: Reducer>: Red
         }
         // Run child reducer on scoped state and capture the effect
         let childEffect = child().reduce(into: &state[keyPath: statePath], action: childAction)
+        let fromChildAction = self.fromChildAction
 
         // Map child effect's actions to parent actions
         // We wrap the child effect and transform its actions
