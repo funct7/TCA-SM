@@ -2,12 +2,13 @@ import Foundation
 import ComposableArchitecture
 
 @dynamicMemberLookup
-public enum StateMachineEvent<Input, IOResult> {
+public enum StateMachineEvent<Input, IOResult>
+where Input : Sendable, IOResult : Sendable {
     case input(Input)
     case ioResult(IOResult)
 }
 
-extension StateMachineEvent : Sendable where Input : Sendable, IOResult : Sendable { }
+extension StateMachineEvent : Sendable { }
 
 extension StateMachineEvent : StateMachineEventConvertible {
     

@@ -1,9 +1,9 @@
 import Foundation
 import ComposableArchitecture
 
-public protocol StateMachineEventConvertible<Input, IOResult> {
-    associatedtype Input
-    associatedtype IOResult
+public protocol StateMachineEventConvertible<Input, IOResult> : Sendable {
+    associatedtype Input: Sendable
+    associatedtype IOResult: Sendable
     
     static func input(_ value: Input) -> Self
     static func ioResult(_ value: IOResult) -> Self
@@ -25,8 +25,9 @@ Action.IOResult == IOResult
     }
     
     func applyIOEffect(_ ioEffect: IOEffect) -> Effect<Action> {
-        .run { send in
-            for try await result in runIOEffect(ioEffect) {
+        let results = runIOEffect(ioEffect)
+        return .run { send in
+            for try await result in results {
                 await send(.ioResult(result))
             }
         }
