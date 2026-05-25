@@ -12,6 +12,7 @@ struct StateMachinePlugin: CompilerPlugin {
         ComposableStateMachineMacro.self,
         NestedStateMacro.self,
         ForwardMacro.self,
+        ForwardValueMacro.self,
         NestedFeatureMacro.self,
         // Core macro for Action typealias
         StateMachineMacro.self,

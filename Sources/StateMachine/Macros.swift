@@ -122,6 +122,25 @@ public macro Forward<T>(_ target: T) = #externalMacro(
     type: "ForwardMacro"
 )
 
+// MARK: - ForwardValue
+
+/// Marks an Input case as forwarding its associated value as the child's entire input.
+///
+/// Use this when the child feature's `Input` is a value type rather than an enum.
+///
+/// Example:
+/// ```swift
+/// enum Input {
+///     @ForwardValue(NumberFactLoader.Input.self)
+///     case load(Int)
+/// }
+/// ```
+@attached(peer)
+public macro ForwardValue<T>(_ target: T.Type) = #externalMacro(
+    module: "StateMachineMacros",
+    type: "ForwardValueMacro"
+)
+
 // MARK: - NestedFeature
 
 /// Declares a nested feature for edge cases like computed properties.

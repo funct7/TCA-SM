@@ -146,7 +146,19 @@ private struct StateMachineAnalyzer {
             guard let caseDecl = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
 
             for element in caseDecl.elements {
-                guard let forwardAttr = findForwardAttribute(in: caseDecl) else { continue }
+                let forwardAttr = findAttribute(named: "Forward", in: caseDecl)
+                let forwardValueAttr = findAttribute(named: "ForwardValue", in: caseDecl)
+
+                guard !(forwardAttr != nil && forwardValueAttr != nil) else {
+                    throw MacroError.message("Use either @Forward or @ForwardValue on \(enumDecl.name.text).\(element.name.text), not both")
+                }
+
+                guard let forwardingAttribute = forwardAttr ?? forwardValueAttr else { continue }
+                let isValueForward = forwardValueAttr != nil
+
+                guard !isValueForward || !isIOResult else {
+                    throw MacroError.message("@ForwardValue can only be used on Input cases")
+                }
 
                 let caseName = element.name.text
                 let associatedValues = element.parameterClause?.parameters.map { param -> AssociatedValue in
@@ -155,8 +167,15 @@ private struct StateMachineAnalyzer {
                     return AssociatedValue(label: label, type: type)
                 } ?? []
 
-                // Parse the @Forward argument to extract target info
-                let targetInfo = try parseForwardTarget(from: forwardAttr)
+                if isValueForward && associatedValues.count != 1 {
+                    throw MacroError.message("@ForwardValue requires exactly one associated value on \(enumDecl.name.text).\(caseName)")
+                }
+
+                let targetInfo = try parseForwardTarget(
+                    from: forwardingAttribute,
+                    attributeName: isValueForward ? "ForwardValue" : "Forward",
+                    requiresWholeEnum: isValueForward
+                )
 
                 forwards.append(ForwardInfo(
                     parentCaseName: caseName,
@@ -165,6 +184,7 @@ private struct StateMachineAnalyzer {
                     targetEnumType: targetInfo.enumType,
                     targetCaseName: targetInfo.caseName,
                     isWholeEnumForward: targetInfo.isWholeEnumForward,
+                    isValueForward: isValueForward,
                     isIOResult: isIOResult
                 ))
             }
@@ -173,10 +193,10 @@ private struct StateMachineAnalyzer {
         return forwards
     }
 
-    private static func findForwardAttribute(in caseDecl: EnumCaseDeclSyntax) -> AttributeSyntax? {
+    private static func findAttribute(named name: String, in caseDecl: EnumCaseDeclSyntax) -> AttributeSyntax? {
         for attr in caseDecl.attributes {
             if case let .attribute(attribute) = attr,
-               isAttributeNamed(attribute, name: "Forward") {
+               isAttributeNamed(attribute, name: name) {
                 return attribute
             }
         }
@@ -193,9 +213,13 @@ private struct StateMachineAnalyzer {
         return attrName == name || attrName.hasPrefix("\(name)<") || attrName.hasPrefix("\(name)(")
     }
 
-    private static func parseForwardTarget(from attribute: AttributeSyntax) throws -> ForwardTarget {
+    private static func parseForwardTarget(
+        from attribute: AttributeSyntax,
+        attributeName: String,
+        requiresWholeEnum: Bool
+    ) throws -> ForwardTarget {
         guard let arguments = attribute.arguments else {
-            throw MacroError.message("@Forward requires a target argument")
+            throw MacroError.message("@\(attributeName) requires a target argument")
         }
 
         // The argument could be:
@@ -218,7 +242,7 @@ private struct StateMachineAnalyzer {
         let components = argString.split(separator: ".").map(String.init)
 
         guard components.count >= 3 else {
-            throw MacroError.message("@Forward target must be in format FeatureName.EnumType.caseName (got: \(argString))")
+            throw MacroError.message("@\(attributeName) target must be in format FeatureName.EnumType.caseName or FeatureName.EnumType.self (got: \(argString))")
         }
 
         let caseName = components.last!
@@ -226,6 +250,10 @@ private struct StateMachineAnalyzer {
         let featureName = components.dropLast(2).joined(separator: ".")
 
         let isWholeEnumForward = caseName == "self"
+
+        guard !requiresWholeEnum || isWholeEnumForward else {
+            throw MacroError.message("@\(attributeName) target must be in format FeatureName.Input.self (got: \(argString))")
+        }
 
         return ForwardTarget(
             featureName: featureName,
@@ -348,6 +376,10 @@ private struct StateMachineAnalyzer {
             guard let forwards = featureForwards[nestedState.featureName] else { continue }
 
             let inputMappings = forwards.inputForwards.map { forward -> String in
+                if forward.isValueForward {
+                    let valueForwarding = makeValueInputForwarding(forward.associatedValues)
+                    return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .input(\(valueForwarding.call))"
+                }
                 let valueForwarding = makeValueForwarding(forward.associatedValues)
                 return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .input(.\(forward.targetCaseName!)\(valueForwarding.call))"
             }
@@ -472,6 +504,12 @@ private struct StateMachineAnalyzer {
 
         return ("(\(bindings.joined(separator: ", ")))", "(\(args.joined(separator: ", ")))")
     }
+
+    private func makeValueInputForwarding(_ associatedValues: [AssociatedValue]) -> (pattern: String, call: String) {
+        let associatedValue = associatedValues[0]
+        let name = associatedValue.label ?? "value"
+        return ("(let \(name))", name)
+    }
 }
 
 // MARK: - Helper Types
@@ -494,6 +532,7 @@ private struct ForwardInfo {
     let targetEnumType: String
     let targetCaseName: String?
     let isWholeEnumForward: Bool
+    let isValueForward: Bool
     let isIOResult: Bool
 }
 
