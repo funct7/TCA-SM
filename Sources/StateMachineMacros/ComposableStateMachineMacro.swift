@@ -162,7 +162,7 @@ private struct StateMachineAnalyzer {
 
                 let caseName = element.name.text
                 let associatedValues = element.parameterClause?.parameters.map { param -> AssociatedValue in
-                    let label = param.firstName?.text
+                    let label = param.firstName?.text == "_" ? nil : param.firstName?.text
                     let type = param.type.trimmedDescription
                     return AssociatedValue(label: label, type: type)
                 } ?? []

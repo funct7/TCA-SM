@@ -206,6 +206,92 @@ final class ComposableStateMachineMacroTests: XCTestCase {
         )
     }
 
+    func testValueForwardingTreatsUnderscoreLabelAsUnlabeled() {
+        assertMacroExpansion(
+            """
+            @ComposableStateMachine
+            struct ParentFeature: StateMachine {
+                struct State {
+                    @NestedState var load = NumberFactLoader.State()
+                }
+
+                enum Input {
+                    @ForwardValue(NumberFactLoader.Input.self)
+                    case load(_ value: Int)
+                }
+            }
+            """,
+            expandedSource:
+            """
+            struct ParentFeature: StateMachine {
+                struct State {
+                    var load = NumberFactLoader.State()
+                }
+
+                enum Input {
+                    case load(_ value: Int)
+                }
+
+                static func reduce(_ state: State, _ action: Action) -> Transition {
+                    return switch Action.map(action) {
+                    case nil:
+                        identity
+                    case .input(let input)?:
+                        reduceInput(state, input)
+                    case .ioResult(let ioResult)?:
+                        reduceIOResult(state, ioResult)
+                    }
+                }
+
+                func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
+                    let (nextState, ioEffect) = transition
+                    if let nextState {
+                        state = nextState
+                    }
+                    guard let ioEffect else {
+                        return .none
+                    }
+                    return .run { send in
+                        for try await result in runIOEffect(ioEffect) {
+                            await send(.ioResult(result))
+                        }
+                    }
+                }
+
+                @ReducerBuilder<State, Action>
+                var body: some Reducer<State, Action> {
+                    NestedStateMachine<State, Action, NumberFactLoader>(
+                        state: \\.load,
+                        toChildAction: { (action: Action) -> NumberFactLoader.Action? in
+                            guard case .input(let input) = action else {
+                                return nil
+                            }
+                        switch input {
+                        case .load(let value):
+                                return .input(value)
+                        default:
+                                return nil
+                        }
+                        },
+                        fromChildAction: { @Sendable (childAction: NumberFactLoader.Action) -> Action? in
+                            nil
+                        },
+                        child: {
+                            NumberFactLoader()
+                        }
+                    )
+
+                    Reduce { state, action in
+                            let transition = Self.reduce(state, action)
+                            return apply(transition, to: &state)
+                        }
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
     func testForwardValueRequiresOneAssociatedValue() {
         assertMacroExpansion(
             """
