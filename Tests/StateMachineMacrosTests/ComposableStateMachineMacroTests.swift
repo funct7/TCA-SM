@@ -244,6 +244,44 @@ final class ComposableStateMachineMacroTests: XCTestCase {
         )
     }
 
+    func testForwardValueRequiresChildInputSelfTarget() {
+        assertMacroExpansion(
+            """
+            @ComposableStateMachine
+            struct ParentFeature: StateMachine {
+                struct State {
+                    @NestedState var load = NumberFactLoader.State()
+                }
+
+                enum Input {
+                    @ForwardValue(NumberFactLoader.IOResult.self)
+                    case load(Int)
+                }
+            }
+            """,
+            expandedSource:
+            """
+            struct ParentFeature: StateMachine {
+                struct State {
+                    var load = NumberFactLoader.State()
+                }
+
+                enum Input {
+                    case load(Int)
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message: "@ForwardValue target must be in format FeatureName.Input.self (got: NumberFactLoader.IOResult.self)",
+                    line: 1,
+                    column: 1
+                )
+            ],
+            macros: macros
+        )
+    }
+
     func testForwardValueCannotBeUsedOnIOResult() {
         assertMacroExpansion(
             """

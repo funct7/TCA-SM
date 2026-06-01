@@ -174,7 +174,7 @@ private struct StateMachineAnalyzer {
                 let targetInfo = try parseForwardTarget(
                     from: forwardingAttribute,
                     attributeName: isValueForward ? "ForwardValue" : "Forward",
-                    requiresWholeEnum: isValueForward
+                    requiredWholeEnumType: isValueForward ? "Input" : nil
                 )
 
                 forwards.append(ForwardInfo(
@@ -216,7 +216,7 @@ private struct StateMachineAnalyzer {
     private static func parseForwardTarget(
         from attribute: AttributeSyntax,
         attributeName: String,
-        requiresWholeEnum: Bool
+        requiredWholeEnumType: String?
     ) throws -> ForwardTarget {
         guard let arguments = attribute.arguments else {
             throw MacroError.message("@\(attributeName) requires a target argument")
@@ -251,8 +251,10 @@ private struct StateMachineAnalyzer {
 
         let isWholeEnumForward = caseName == "self"
 
-        guard !requiresWholeEnum || isWholeEnumForward else {
-            throw MacroError.message("@\(attributeName) target must be in format FeatureName.Input.self (got: \(argString))")
+        if let requiredWholeEnumType {
+            guard isWholeEnumForward, enumType == requiredWholeEnumType else {
+                throw MacroError.message("@\(attributeName) target must be in format FeatureName.\(requiredWholeEnumType).self (got: \(argString))")
+            }
         }
 
         return ForwardTarget(
