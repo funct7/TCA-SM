@@ -177,6 +177,15 @@ private struct StateMachineAnalyzer {
                     requiresWholeEnum: isValueForward
                 )
 
+                if targetInfo.isWholeEnumForward && !isValueForward {
+                    try validateWholeEnumForward(
+                        enumName: enumDecl.name.text,
+                        caseName: caseName,
+                        associatedValues: associatedValues,
+                        targetType: "\(targetInfo.featureName).\(targetInfo.enumType)"
+                    )
+                }
+
                 forwards.append(ForwardInfo(
                     parentCaseName: caseName,
                     associatedValues: associatedValues,
@@ -191,6 +200,17 @@ private struct StateMachineAnalyzer {
         }
 
         return forwards
+    }
+
+    private static func validateWholeEnumForward(
+        enumName: String,
+        caseName: String,
+        associatedValues: [AssociatedValue],
+        targetType: String
+    ) throws {
+        guard associatedValues.count == 1, associatedValues[0].type == targetType else {
+            throw MacroError.message("Whole-enum @Forward on \(enumName).\(caseName) requires exactly one associated value of type \(targetType)")
+        }
     }
 
     private static func findAttribute(named name: String, in caseDecl: EnumCaseDeclSyntax) -> AttributeSyntax? {
@@ -380,6 +400,9 @@ private struct StateMachineAnalyzer {
                     let valueForwarding = makeValueInputForwarding(forward.associatedValues)
                     return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .input(\(valueForwarding.call))"
                 }
+                if forward.isWholeEnumForward {
+                    return "case .\(forward.parentCaseName)(let childInput): return .input(childInput)"
+                }
                 let valueForwarding = makeValueForwarding(forward.associatedValues)
                 return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .input(.\(forward.targetCaseName!)\(valueForwarding.call))"
             }
@@ -448,8 +471,8 @@ private struct StateMachineAnalyzer {
                         // Whole enum forward: .ioResult(result) -> .ioResult(.presetsResult(result))
                         return "case .ioResult(let result): return .ioResult(.\(forward.parentCaseName)(result))"
                     } else {
-                        // Individual case forward - not typically used for fromChildAction
-                        return "case .ioResult(let result): return .ioResult(.\(forward.parentCaseName)(result))"
+                        let valueForwarding = makeValueForwarding(forward.associatedValues)
+                        return "case .ioResult(.\(forward.targetCaseName!)\(valueForwarding.pattern)): return .ioResult(.\(forward.parentCaseName)\(valueForwarding.call))"
                     }
                 }
                 let reverseCases = reverseMappings.joined(separator: "\n                    ")

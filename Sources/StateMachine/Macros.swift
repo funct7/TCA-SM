@@ -104,6 +104,9 @@ public macro NestedState() = #externalMacro(
 /// Example:
 /// ```swift
 /// enum Input {
+///     @Forward(CounterFeature.Input.self)
+///     case counter(CounterFeature.Input)
+///
 ///     @Forward(CounterFeature.Input.incrementTapped)
 ///     case counterIncrement
 ///
@@ -114,6 +117,9 @@ public macro NestedState() = #externalMacro(
 /// enum IOResult {
 ///     @Forward(PresetsFeature.IOResult.self)
 ///     case presetsResult(PresetsFeature.IOResult)
+///
+///     @Forward(PresetsFeature.IOResult.loaded)
+///     case presetsLoaded([Preset])
 /// }
 /// ```
 @attached(peer)
