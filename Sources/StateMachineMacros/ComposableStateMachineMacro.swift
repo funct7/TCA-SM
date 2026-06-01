@@ -466,7 +466,10 @@ private struct StateMachineAnalyzer {
             let fromChildActionBody: String
             if hasIOResultMappings {
                 // Generate reverse mapping for IOResult
-                let reverseMappings = forwards.ioResultForwards.map { forward -> String in
+                let orderedForwards = forwards.ioResultForwards
+                    .filter { !$0.isWholeEnumForward } + forwards.ioResultForwards
+                    .filter(\.isWholeEnumForward)
+                let reverseMappings = orderedForwards.map { forward -> String in
                     if forward.isWholeEnumForward {
                         // Whole enum forward: .ioResult(result) -> .ioResult(.presetsResult(result))
                         return "case .ioResult(let result): return .ioResult(.\(forward.parentCaseName)(result))"

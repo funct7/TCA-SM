@@ -297,6 +297,105 @@ final class ComposableStateMachineMacroTests: XCTestCase {
         )
     }
 
+    func testIndividualIOResultReverseMappingsPrecedeWholeEnumCatchAll() {
+        assertMacroExpansion(
+            """
+            @ComposableStateMachine
+            struct ParentFeature: StateMachine {
+                struct State {
+                    @NestedState var child = ChildFeature.State()
+                }
+
+                enum IOResult {
+                    @Forward(ChildFeature.IOResult.self)
+                    case child(ChildFeature.IOResult)
+
+                    @Forward(ChildFeature.IOResult.loaded)
+                    case childLoaded(Int)
+                }
+            }
+            """,
+            expandedSource:
+            """
+            struct ParentFeature: StateMachine {
+                struct State {
+                    var child = ChildFeature.State()
+                }
+
+                enum IOResult {
+                    case child(ChildFeature.IOResult)
+                    case childLoaded(Int)
+                }
+
+                static func reduce(_ state: State, _ action: Action) -> Transition {
+                    return switch Action.map(action) {
+                    case nil:
+                        identity
+                    case .input(let input)?:
+                        reduceInput(state, input)
+                    case .ioResult(let ioResult)?:
+                        reduceIOResult(state, ioResult)
+                    }
+                }
+
+                func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
+                    let (nextState, ioEffect) = transition
+                    if let nextState {
+                        state = nextState
+                    }
+                    guard let ioEffect else {
+                        return .none
+                    }
+                    return .run { send in
+                        for try await result in runIOEffect(ioEffect) {
+                            await send(.ioResult(result))
+                        }
+                    }
+                }
+
+                @ReducerBuilder<State, Action>
+                var body: some Reducer<State, Action> {
+                    NestedStateMachine<State, Action, ChildFeature>(
+                        state: \\.child,
+                        toChildAction: { (action: Action) -> ChildFeature.Action? in
+                            guard case .ioResult(let ioResult) = action else {
+                                return nil
+                            }
+                        switch ioResult {
+                        case .child(let childResult):
+                                return .ioResult(childResult)
+                                case .childLoaded(let v0):
+                                return .ioResult(.loaded(v0))
+                        default:
+                                return nil
+                        }
+                        },
+                        fromChildAction: { @Sendable (childAction: ChildFeature.Action) -> Action? in
+                            switch childAction {
+                            case .ioResult(.loaded(let v0)):
+                                return .ioResult(.childLoaded(v0))
+                                    case .ioResult(let result):
+                                return .ioResult(.child(result))
+                            default:
+                                return nil
+                            }
+                        },
+                        child: {
+                            ChildFeature()
+                        }
+                    )
+
+                    Reduce { state, action in
+                            let transition = Self.reduce(state, action)
+                            return apply(transition, to: &state)
+                        }
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
     func testValueForwardingExpansion() {
         assertMacroExpansion(
             """
