@@ -156,10 +156,6 @@ private struct StateMachineAnalyzer {
                 guard let forwardingAttribute = forwardAttr ?? forwardValueAttr else { continue }
                 let isValueForward = forwardValueAttr != nil
 
-                guard !isValueForward || !isIOResult else {
-                    throw MacroError.message("@ForwardValue can only be used on Input cases")
-                }
-
                 let caseName = element.name.text
                 let associatedValues = element.parameterClause?.parameters.map { param -> AssociatedValue in
                     let label = param.firstName?.text == "_" ? nil : param.firstName?.text
@@ -174,7 +170,7 @@ private struct StateMachineAnalyzer {
                 let targetInfo = try parseForwardTarget(
                     from: forwardingAttribute,
                     attributeName: isValueForward ? "ForwardValue" : "Forward",
-                    requiredWholeEnumType: isValueForward ? "Input" : nil
+                    requiredWholeEnumType: isValueForward ? (isIOResult ? "IOResult" : "Input") : nil
                 )
 
                 if targetInfo.isWholeEnumForward && !isValueForward {
@@ -184,6 +180,15 @@ private struct StateMachineAnalyzer {
                         associatedValues: associatedValues,
                         targetType: "\(targetInfo.featureName).\(targetInfo.enumType)"
                     )
+                }
+
+                if targetInfo.isWholeEnumForward,
+                   let existingForward = forwards.first(where: {
+                       $0.isWholeEnumForward &&
+                       $0.targetFeature == targetInfo.featureName &&
+                       $0.targetEnumType == targetInfo.enumType
+                   }) {
+                    throw MacroError.message("Whole-target forwarding for \(targetInfo.featureName).\(targetInfo.enumType) is already declared on \(enumDecl.name.text).\(existingForward.parentCaseName)")
                 }
 
                 forwards.append(ForwardInfo(
@@ -410,6 +415,10 @@ private struct StateMachineAnalyzer {
             }
 
             let ioResultMappings = forwards.ioResultForwards.map { forward -> String in
+                if forward.isValueForward {
+                    let valueForwarding = makeValueInputForwarding(forward.associatedValues)
+                    return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .ioResult(\(valueForwarding.call))"
+                }
                 if forward.isWholeEnumForward {
                     // Whole enum forward: case .presetsResult(let childResult) -> return .ioResult(childResult)
                     return "case .\(forward.parentCaseName)(let childResult): return .ioResult(childResult)"

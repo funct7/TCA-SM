@@ -130,15 +130,20 @@ public macro Forward<T>(_ target: T) = #externalMacro(
 
 // MARK: - ForwardValue
 
-/// Marks an Input case as forwarding its associated value as the child's entire input.
+/// Marks an Input or IOResult case as forwarding its associated value as the child's entire value.
 ///
-/// Use this when the child feature's `Input` is a value type rather than an enum.
+/// Use this when the child feature's `Input` or `IOResult` is a value type rather than an enum case.
 ///
 /// Example:
 /// ```swift
 /// enum Input {
 ///     @ForwardValue(NumberFactLoader.Input.self)
 ///     case load(Int)
+/// }
+///
+/// enum IOResult {
+///     @ForwardValue(NumberFactLoader.IOResult.self)
+///     case loaded(String)
 /// }
 /// ```
 @attached(peer)

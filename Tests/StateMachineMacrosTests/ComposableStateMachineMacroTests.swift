@@ -758,7 +758,7 @@ final class ComposableStateMachineMacroTests: XCTestCase {
         )
     }
 
-    func testForwardValueCannotBeUsedOnIOResult() {
+    func testForwardValueIOResultExpansion() {
         assertMacroExpansion(
             """
             @ComposableStateMachine
@@ -783,11 +783,148 @@ final class ComposableStateMachineMacroTests: XCTestCase {
                 enum IOResult {
                     case loadResult(NumberFactLoader.IOResult)
                 }
+
+                static func reduce(_ state: State, _ action: Action) -> Transition {
+                    return switch Action.map(action) {
+                    case nil:
+                        identity
+                    case .input(let input)?:
+                        reduceInput(state, input)
+                    case .ioResult(let ioResult)?:
+                        reduceIOResult(state, ioResult)
+                    }
+                }
+
+                func apply(_ transition: Transition, to state: inout State) -> Effect<Action> {
+                    let (nextState, ioEffect) = transition
+                    if let nextState {
+                        state = nextState
+                    }
+                    guard let ioEffect else {
+                        return .none
+                    }
+                    return .run { send in
+                        for try await result in runIOEffect(ioEffect) {
+                            await send(.ioResult(result))
+                        }
+                    }
+                }
+
+                @ReducerBuilder<State, Action>
+                var body: some Reducer<State, Action> {
+                    NestedStateMachine<State, Action, NumberFactLoader>(
+                        state: \\.load,
+                        toChildAction: { (action: Action) -> NumberFactLoader.Action? in
+                            guard case .ioResult(let ioResult) = action else {
+                                return nil
+                            }
+                        switch ioResult {
+                        case .loadResult(let value):
+                                return .ioResult(value)
+                        default:
+                                return nil
+                        }
+                        },
+                        fromChildAction: { @Sendable (childAction: NumberFactLoader.Action) -> Action? in
+                            switch childAction {
+                            case .ioResult(let result):
+                                return .ioResult(.loadResult(result))
+                            default:
+                                return nil
+                            }
+                        },
+                        child: {
+                            NumberFactLoader()
+                        }
+                    )
+
+                    Reduce { state, action in
+                            let transition = Self.reduce(state, action)
+                            return apply(transition, to: &state)
+                        }
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
+    func testDuplicateWholeEnumInputForwardEmitsDiagnostic() {
+        assertMacroExpansion(
+            """
+            @ComposableStateMachine
+            struct ParentFeature: StateMachine {
+                struct State {
+                    @NestedState var child = ChildFeature.State()
+                }
+
+                enum Input {
+                    @Forward(ChildFeature.Input.self)
+                    case childA(ChildFeature.Input)
+
+                    @Forward(ChildFeature.Input.self)
+                    case childB(ChildFeature.Input)
+                }
+            }
+            """,
+            expandedSource:
+            """
+            struct ParentFeature: StateMachine {
+                struct State {
+                    var child = ChildFeature.State()
+                }
+
+                enum Input {
+                    case childA(ChildFeature.Input)
+                    case childB(ChildFeature.Input)
+                }
             }
             """,
             diagnostics: [
                 DiagnosticSpec(
-                    message: "@ForwardValue can only be used on Input cases",
+                    message: "Whole-target forwarding for ChildFeature.Input is already declared on Input.childA",
+                    line: 1,
+                    column: 1
+                )
+            ],
+            macros: macros
+        )
+    }
+
+    func testDuplicateWholeValueIOResultForwardEmitsDiagnostic() {
+        assertMacroExpansion(
+            """
+            @ComposableStateMachine
+            struct ParentFeature: StateMachine {
+                struct State {
+                    @NestedState var load = NumberFactLoader.State()
+                }
+
+                enum IOResult {
+                    @ForwardValue(NumberFactLoader.IOResult.self)
+                    case loadA(NumberFactLoader.IOResult)
+
+                    @ForwardValue(NumberFactLoader.IOResult.self)
+                    case loadB(NumberFactLoader.IOResult)
+                }
+            }
+            """,
+            expandedSource:
+            """
+            struct ParentFeature: StateMachine {
+                struct State {
+                    var load = NumberFactLoader.State()
+                }
+
+                enum IOResult {
+                    case loadA(NumberFactLoader.IOResult)
+                    case loadB(NumberFactLoader.IOResult)
+                }
+            }
+            """,
+            diagnostics: [
+                DiagnosticSpec(
+                    message: "Whole-target forwarding for NumberFactLoader.IOResult is already declared on IOResult.loadA",
                     line: 1,
                     column: 1
                 )
