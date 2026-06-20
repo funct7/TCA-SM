@@ -146,17 +146,50 @@ private struct StateMachineAnalyzer {
             guard let caseDecl = member.decl.as(EnumCaseDeclSyntax.self) else { continue }
 
             for element in caseDecl.elements {
-                guard let forwardAttr = findForwardAttribute(in: caseDecl) else { continue }
+                let forwardAttr = findAttribute(named: "Forward", in: caseDecl)
+                let forwardValueAttr = findAttribute(named: "ForwardValue", in: caseDecl)
+
+                guard !(forwardAttr != nil && forwardValueAttr != nil) else {
+                    throw MacroError.message("Use either @Forward or @ForwardValue on \(enumDecl.name.text).\(element.name.text), not both")
+                }
+
+                guard let forwardingAttribute = forwardAttr ?? forwardValueAttr else { continue }
+                let isValueForward = forwardValueAttr != nil
 
                 let caseName = element.name.text
                 let associatedValues = element.parameterClause?.parameters.map { param -> AssociatedValue in
-                    let label = param.firstName?.text
+                    let label = param.firstName?.text == "_" ? nil : param.firstName?.text
                     let type = param.type.trimmedDescription
                     return AssociatedValue(label: label, type: type)
                 } ?? []
 
-                // Parse the @Forward argument to extract target info
-                let targetInfo = try parseForwardTarget(from: forwardAttr)
+                if isValueForward && associatedValues.count != 1 {
+                    throw MacroError.message("@ForwardValue requires exactly one associated value on \(enumDecl.name.text).\(caseName)")
+                }
+
+                let targetInfo = try parseForwardTarget(
+                    from: forwardingAttribute,
+                    attributeName: isValueForward ? "ForwardValue" : "Forward",
+                    requiredWholeEnumType: isValueForward ? (isIOResult ? "IOResult" : "Input") : nil
+                )
+
+                if targetInfo.isWholeEnumForward && !isValueForward {
+                    try validateWholeEnumForward(
+                        enumName: enumDecl.name.text,
+                        caseName: caseName,
+                        associatedValues: associatedValues,
+                        targetType: "\(targetInfo.featureName).\(targetInfo.enumType)"
+                    )
+                }
+
+                if targetInfo.isWholeEnumForward,
+                   let existingForward = forwards.first(where: {
+                       $0.isWholeEnumForward &&
+                       $0.targetFeature == targetInfo.featureName &&
+                       $0.targetEnumType == targetInfo.enumType
+                   }) {
+                    throw MacroError.message("Whole-target forwarding for \(targetInfo.featureName).\(targetInfo.enumType) is already declared on \(enumDecl.name.text).\(existingForward.parentCaseName)")
+                }
 
                 forwards.append(ForwardInfo(
                     parentCaseName: caseName,
@@ -165,6 +198,7 @@ private struct StateMachineAnalyzer {
                     targetEnumType: targetInfo.enumType,
                     targetCaseName: targetInfo.caseName,
                     isWholeEnumForward: targetInfo.isWholeEnumForward,
+                    isValueForward: isValueForward,
                     isIOResult: isIOResult
                 ))
             }
@@ -173,10 +207,21 @@ private struct StateMachineAnalyzer {
         return forwards
     }
 
-    private static func findForwardAttribute(in caseDecl: EnumCaseDeclSyntax) -> AttributeSyntax? {
+    private static func validateWholeEnumForward(
+        enumName: String,
+        caseName: String,
+        associatedValues: [AssociatedValue],
+        targetType: String
+    ) throws {
+        guard associatedValues.count == 1, associatedValues[0].type == targetType else {
+            throw MacroError.message("Whole-enum @Forward on \(enumName).\(caseName) requires exactly one associated value of type \(targetType)")
+        }
+    }
+
+    private static func findAttribute(named name: String, in caseDecl: EnumCaseDeclSyntax) -> AttributeSyntax? {
         for attr in caseDecl.attributes {
             if case let .attribute(attribute) = attr,
-               isAttributeNamed(attribute, name: "Forward") {
+               isAttributeNamed(attribute, name: name) {
                 return attribute
             }
         }
@@ -193,9 +238,13 @@ private struct StateMachineAnalyzer {
         return attrName == name || attrName.hasPrefix("\(name)<") || attrName.hasPrefix("\(name)(")
     }
 
-    private static func parseForwardTarget(from attribute: AttributeSyntax) throws -> ForwardTarget {
+    private static func parseForwardTarget(
+        from attribute: AttributeSyntax,
+        attributeName: String,
+        requiredWholeEnumType: String?
+    ) throws -> ForwardTarget {
         guard let arguments = attribute.arguments else {
-            throw MacroError.message("@Forward requires a target argument")
+            throw MacroError.message("@\(attributeName) requires a target argument")
         }
 
         // The argument could be:
@@ -218,7 +267,7 @@ private struct StateMachineAnalyzer {
         let components = argString.split(separator: ".").map(String.init)
 
         guard components.count >= 3 else {
-            throw MacroError.message("@Forward target must be in format FeatureName.EnumType.caseName (got: \(argString))")
+            throw MacroError.message("@\(attributeName) target must be in format FeatureName.EnumType.caseName or FeatureName.EnumType.self (got: \(argString))")
         }
 
         let caseName = components.last!
@@ -226,6 +275,12 @@ private struct StateMachineAnalyzer {
         let featureName = components.dropLast(2).joined(separator: ".")
 
         let isWholeEnumForward = caseName == "self"
+
+        if let requiredWholeEnumType {
+            guard isWholeEnumForward, enumType == requiredWholeEnumType else {
+                throw MacroError.message("@\(attributeName) target must be in format FeatureName.\(requiredWholeEnumType).self (got: \(argString))")
+            }
+        }
 
         return ForwardTarget(
             featureName: featureName,
@@ -348,11 +403,22 @@ private struct StateMachineAnalyzer {
             guard let forwards = featureForwards[nestedState.featureName] else { continue }
 
             let inputMappings = forwards.inputForwards.map { forward -> String in
+                if forward.isValueForward {
+                    let valueForwarding = makeValueInputForwarding(forward.associatedValues)
+                    return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .input(\(valueForwarding.call))"
+                }
+                if forward.isWholeEnumForward {
+                    return "case .\(forward.parentCaseName)(let childInput): return .input(childInput)"
+                }
                 let valueForwarding = makeValueForwarding(forward.associatedValues)
                 return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .input(.\(forward.targetCaseName!)\(valueForwarding.call))"
             }
 
             let ioResultMappings = forwards.ioResultForwards.map { forward -> String in
+                if forward.isValueForward {
+                    let valueForwarding = makeValueInputForwarding(forward.associatedValues)
+                    return "case .\(forward.parentCaseName)\(valueForwarding.pattern): return .ioResult(\(valueForwarding.call))"
+                }
                 if forward.isWholeEnumForward {
                     // Whole enum forward: case .presetsResult(let childResult) -> return .ioResult(childResult)
                     return "case .\(forward.parentCaseName)(let childResult): return .ioResult(childResult)"
@@ -411,13 +477,16 @@ private struct StateMachineAnalyzer {
             let fromChildActionBody: String
             if hasIOResultMappings {
                 // Generate reverse mapping for IOResult
-                let reverseMappings = forwards.ioResultForwards.map { forward -> String in
+                let orderedForwards = forwards.ioResultForwards
+                    .filter { !$0.isWholeEnumForward } + forwards.ioResultForwards
+                    .filter(\.isWholeEnumForward)
+                let reverseMappings = orderedForwards.map { forward -> String in
                     if forward.isWholeEnumForward {
                         // Whole enum forward: .ioResult(result) -> .ioResult(.presetsResult(result))
                         return "case .ioResult(let result): return .ioResult(.\(forward.parentCaseName)(result))"
                     } else {
-                        // Individual case forward - not typically used for fromChildAction
-                        return "case .ioResult(let result): return .ioResult(.\(forward.parentCaseName)(result))"
+                        let valueForwarding = makeValueForwarding(forward.associatedValues)
+                        return "case .ioResult(.\(forward.targetCaseName!)\(valueForwarding.pattern)): return .ioResult(.\(forward.parentCaseName)\(valueForwarding.call))"
                     }
                 }
                 let reverseCases = reverseMappings.joined(separator: "\n                    ")
@@ -472,6 +541,12 @@ private struct StateMachineAnalyzer {
 
         return ("(\(bindings.joined(separator: ", ")))", "(\(args.joined(separator: ", ")))")
     }
+
+    private func makeValueInputForwarding(_ associatedValues: [AssociatedValue]) -> (pattern: String, call: String) {
+        let associatedValue = associatedValues[0]
+        let name = associatedValue.label ?? "value"
+        return ("(let \(name))", name)
+    }
 }
 
 // MARK: - Helper Types
@@ -494,6 +569,7 @@ private struct ForwardInfo {
     let targetEnumType: String
     let targetCaseName: String?
     let isWholeEnumForward: Bool
+    let isValueForward: Bool
     let isIOResult: Bool
 }
 

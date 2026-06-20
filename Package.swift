@@ -35,6 +35,13 @@ let package = Package(
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
                 .product(name: "CasePaths", package: "swift-case-paths"),
             ]
+        ),
+        .testTarget(
+            name: "StateMachineMacrosTests",
+            dependencies: [
+                "StateMachineMacros",
+                .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
+            ]
         )
     ]
 )
